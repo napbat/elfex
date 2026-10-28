@@ -11,6 +11,42 @@
 //!
 //! Use [`VersionMap`] to find the version name of a dynamic symbol from its `Elf_Versym` value.
 //! All names in these tables are offsets in the dynamic string table (`DT_STRTAB`).
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::strtab::{StringTable, StringTableBuilder};
+//! use elfex::version::{
+//!     VER_NDX_GLOBAL, VersionMap, VersionNeedEntry, VersionRequirement,
+//!     VersionRequirementTable, VersymTable,
+//! };
+//! use elfex::Encoding;
+//!
+//! let encoding = Encoding::ELF64_LE;
+//! let mut strings = StringTableBuilder::new();
+//! let libc = strings.add("libc.so.6")?;
+//! let glibc = strings.add("GLIBC_2.34")?;
+//!
+//! // The file needs version index 2 (GLIBC_2.34) from libc.so.6.
+//! let needed = VersionNeedEntry::from_name(2, 0, glibc, b"GLIBC_2.34");
+//! let requirements = VersionRequirementTable {
+//!     requirements: vec![VersionRequirement::new(libc).with_entry(needed)],
+//! };
+//! let bytes = requirements.write(encoding)?;
+//! let requirements = VersionRequirementTable::parse(&bytes, encoding, Some(1))?;
+//!
+//! // Symbol 0 is the null symbol. Symbol 1 has the base version. Symbol 2 needs GLIBC_2.34.
+//! let versym = VersymTable { entries: vec![0, VER_NDX_GLOBAL, 2] };
+//! let versym = VersymTable::parse(&versym.write(encoding), encoding)?;
+//!
+//! let map = VersionMap::new(None, Some(&requirements));
+//! let strings = StringTable::parse(strings.as_bytes());
+//! let version = map.symbol_version(versym.entries[2]).expect("symbol 2 has a version");
+//! assert_eq!(strings.get(version.name)?, "GLIBC_2.34");
+//! assert_eq!(version.file, Some(libc));
+//! assert!(map.symbol_version(versym.entries[1]).is_none());
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 mod definition;
 mod requirement;
