@@ -1,4 +1,5 @@
 use super::*;
+use crate::ErrorKind;
 use crate::header::Machine;
 use crate::prelude::*;
 
@@ -88,7 +89,38 @@ fn write_padded() {
 fn elf32_value_out_of_range() {
     let mut table = DynamicTable::new();
     table.set(DynamicTag::STRTAB, 0x1_0000_0000);
-    assert!(table.write(Encoding::ELF32_LE).is_err());
+    let err = table.write(Encoding::ELF32_LE).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::ValueOutOfRange(_)));
+    assert_eq!(
+        err.context().unwrap().structure.as_deref(),
+        Some("Elf32_Dyn")
+    );
+
+    let mut out = Vec::new();
+    let err = DynamicEntry::new(DynamicTag(0x1_0000_0000), 0)
+        .write(&mut out, Encoding::ELF32_BE)
+        .unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::ValueOutOfRange(_)));
+    assert_eq!(
+        err.context().unwrap().structure.as_deref(),
+        Some("Elf32_Dyn")
+    );
+}
+
+#[test]
+fn parse_short_entry_errors() {
+    for (encoding, name) in [
+        (Encoding::ELF32_LE, "Elf32_Dyn"),
+        (Encoding::ELF64_BE, "Elf64_Dyn"),
+    ] {
+        let size = DynamicEntry::size(encoding.class);
+        // The tag is truncated, then the value is truncated.
+        for len in [encoding.addr_size() - 1, size - 1] {
+            let err = DynamicEntry::parse(&vec![0; len], encoding).unwrap_err();
+            assert!(matches!(err.kind(), ErrorKind::BufferTooSmall { .. }));
+            assert_eq!(err.context().unwrap().structure.as_deref(), Some(name));
+        }
+    }
 }
 
 #[test]
@@ -103,8 +135,16 @@ fn strings() {
     assert_eq!(table.soname(&strings).unwrap(), Some("libfoo.so"));
     assert_eq!(table.runpath(&strings).unwrap(), Some("/opt"));
     assert_eq!(table.rpath(&strings).unwrap(), None);
+    table.set(DynamicTag::RPATH, 21);
+    assert_eq!(table.rpath(&strings).unwrap(), Some("/opt"));
     table.set(DynamicTag::SONAME, 1000);
-    assert!(table.soname(&strings).is_err());
+    let err = table.soname(&strings).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
+    assert_eq!(err.context().unwrap().file_offset, Some(1000));
+    // A string offset after `u32::MAX` is not in any string table.
+    table.set(DynamicTag::SONAME, 0x1_0000_0000);
+    let err = table.soname(&strings).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
 }
 
 #[test]
@@ -147,6 +187,7 @@ fn pointer_and_string_tags() {
     assert!(!DynamicTag::PPC64_GLINK.is_pointer(Machine::AARCH64));
     assert!(DynamicTag::MIPS_RLD_MAP.is_pointer(Machine::MIPS));
     assert!(DynamicTag::AUDIT.is_string());
+    assert!(!DynamicTag::STRTAB.is_string());
     assert!(!DynamicTag::AUDIT.is_pointer(Machine::X86_64));
     assert_eq!(DynamicTag::NEEDED.to_string(), "DT_NEEDED");
     assert_eq!(DynamicTag(0x7000_0001).to_string(), "0x70000001");

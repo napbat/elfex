@@ -162,9 +162,9 @@ impl DynamicTable {
         let size = DynamicEntry::size(encoding.class);
         let mut entries = Vec::new();
         let mut count = 0;
+        // Each chunk is one complete entry, so `DynamicEntry::parse` cannot fail.
         for chunk in bytes.chunks_exact(size) {
-            let entry = DynamicEntry::parse(chunk, encoding)
-                .map_err(|e| e.at_offset(u64::try_from(count * size).unwrap_or(u64::MAX)))?;
+            let entry = DynamicEntry::parse(chunk, encoding)?;
             count += 1;
             if entry.tag == DynamicTag::NULL {
                 break;
