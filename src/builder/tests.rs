@@ -312,6 +312,95 @@ fn rejects_invalid_input() {
 }
 
 #[test]
+fn rejects_invalid_names_data_and_flags() {
+    let new = || ElfBuilder::new(Encoding::ELF64_LE);
+    let comment = || BuilderSection::progbits(".comment", 0, vec![1]);
+    let invalid = [
+        new().interpreter("/lib\0/ld.so"),
+        new().add_section(BuilderSection::progbits(".shstrtab", 0, Vec::new())),
+        new().add_section(BuilderSection::progbits(".a\0b", 0, Vec::new())),
+        new().add_section(BuilderSection {
+            data: vec![1],
+            ..BuilderSection::nobits(".bss", SHF_ALLOC | SHF_WRITE, 0)
+        }),
+        new()
+            .add_section(comment())
+            .add_segment_for_section(SegmentType::NOTE, ".comment"),
+        new().add_section(comment()).entry_in_section(".comment", 0),
+    ];
+    for builder in invalid {
+        let error = builder.try_build().unwrap_err();
+        assert!(
+            matches!(error.kind, ErrorKind::InvalidSection(_)),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_layouts_that_overflow() {
+    let text = BuilderSection::progbits(".text", SHF_ALLOC | SHF_EXECINSTR, vec![0x90; 0x2000]);
+    let mut many = ElfBuilder::new(Encoding::ELF64_LE).add_section(text.clone());
+    for _ in 0..crate::program::PN_XNUM {
+        many = many.add_segment_for_section(SegmentType::NOTE, ".text");
+    }
+    let high_base = ElfBuilder::new(Encoding::ELF64_LE)
+        .base_address(0xffff_ffff_ffff_f000)
+        .add_section(text.clone());
+    let far_entry = ElfBuilder::new(Encoding::ELF64_LE)
+        .add_section(text)
+        .entry_in_section(".text", u64::MAX);
+    for builder in [many, high_base, far_entry] {
+        let error = builder.try_build().unwrap_err();
+        assert!(
+            matches!(error.kind, ErrorKind::ValueOutOfRange(_)),
+            "{error}"
+        );
+    }
+    // The section data must go past `isize::MAX` bytes.
+    let far_section = ElfBuilder::new(Encoding::ELF64_LE).add_section(BuilderSection {
+        addralign: 1 << 63,
+        ..BuilderSection::progbits(".far", 0, vec![1])
+    });
+    let error = far_section.try_build().unwrap_err();
+    assert!(matches!(error.kind, ErrorKind::Generic(_)), "{error}");
+}
+
+#[test]
+fn makes_segments_and_links_for_all_section_kinds() {
+    let elf = ElfBuilder::new(Encoding::ELF64_LE)
+        .add_section(BuilderSection::progbits(
+            ".text",
+            SHF_ALLOC | SHF_EXECINSTR,
+            vec![0xc3; 4],
+        ))
+        .add_section(BuilderSection::nobits(".tbss", SHF_ALLOC | SHF_WRITE, 0x40))
+        .add_section(BuilderSection::progbits(".comment", 0, b"x\0".to_vec()))
+        .add_section(BuilderSection::nobits(".unused", 0, 0x10))
+        .add_section(BuilderSection {
+            link_name: Some(".shstrtab".into()),
+            ..BuilderSection::progbits(".names", 0, Vec::new())
+        })
+        .add_segment_for_section(SegmentType::TLS, ".tbss")
+        .add_segment_for_section(SegmentType::GNU_EH_FRAME, ".text")
+        .build();
+    check_layout(&elf, DEFAULT_PAGE_SIZE);
+    let tbss = *elf.section_by_name(".tbss").unwrap().header;
+    let tls = elf.headers().segment(SegmentType::TLS).unwrap();
+    assert_eq!(
+        (tls.vaddr, tls.flags, tls.filesz, tls.memsz),
+        (tbss.addr, PF_R | PF_W, 0, 0x40)
+    );
+    let frame = elf.headers().segment(SegmentType::GNU_EH_FRAME).unwrap();
+    assert_eq!(frame.flags, PF_R | PF_X);
+    let comment = *elf.section_by_name(".comment").unwrap().header;
+    let unused = *elf.section_by_name(".unused").unwrap().header;
+    assert_eq!(unused.offset, comment.offset + comment.size);
+    let names = elf.section_by_name(".names").unwrap().header.link;
+    assert_eq!(names, u32::from(elf.header().shstrndx));
+}
+
+#[test]
 fn keeps_the_header_values() {
     let elf = ElfBuilder::new(Encoding::ELF64_BE)
         .os_abi(OsAbi::FREEBSD)

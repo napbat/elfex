@@ -41,7 +41,7 @@ struct HeaderSizes {
     /// The size of the file header (`e_ehsize`).
     ehsize: u64,
     /// The number of program headers.
-    phnum: usize,
+    phnum: u16,
     /// The file offset after the program header table.
     end: u64,
 }
@@ -69,15 +69,15 @@ pub(super) fn write(builder: &ElfBuilder) -> Result<Vec<u8>> {
 
     let (mut section_headers, shstrtab) = section_headers(&layout)?;
     let shstrndx = section_headers.len().saturating_sub(1);
-    let addr_size = to_u64(encoding.addr_size())?;
-    let shoff = align_up(add(layout.file_end, to_u64(shstrtab.len())?)?, addr_size)?;
+    let addr_size = to_u64(encoding.addr_size());
+    let shoff = align_up(add(layout.file_end, to_u64(shstrtab.len()))?, addr_size)?;
 
     let mut header = FileHeader::new(encoding, builder.file_type, builder.machine);
     header.ident.os_abi = builder.os_abi;
     header.flags = builder.flags;
     header.entry = entry_point(builder, &layout)?;
     header.phoff = sizes.ehsize;
-    header.phnum = u16::try_from(sizes.phnum).map_err(|_| overflow())?;
+    header.phnum = sizes.phnum;
     header.shoff = shoff;
     set_section_counts(&mut header, &mut section_headers, shstrndx)?;
 
@@ -173,14 +173,13 @@ fn header_sizes(builder: &ElfBuilder, has_interp: bool) -> Result<HeaderSizes> {
         + loads
         + builder.segments.len()
         + usize::from(builder.gnu_stack.is_some());
-    if phnum >= usize::from(crate::program::PN_XNUM) {
-        return Err(Error::value_out_of_range(
-            "the builder has too many segments",
-        ));
-    }
-    let ehsize = to_u64(FileHeader::size(class))?;
-    let table = to_u64(phnum)?
-        .checked_mul(to_u64(ProgramHeader::size(class))?)
+    let phnum = u16::try_from(phnum)
+        .ok()
+        .filter(|phnum| *phnum < crate::program::PN_XNUM)
+        .ok_or_else(|| Error::value_out_of_range("the builder has too many segments"))?;
+    let ehsize = to_u64(FileHeader::size(class));
+    let table = u64::from(phnum)
+        .checked_mul(to_u64(ProgramHeader::size(class)))
         .ok_or_else(overflow)?;
     Ok(HeaderSizes {
         ehsize,
@@ -357,7 +356,7 @@ fn program_headers(
     let class = builder.encoding.class;
     let table_size = sub(sizes.end, sizes.ehsize)?;
     let phdr_vaddr = add(base, sizes.ehsize)?;
-    let mut headers = Vec::with_capacity(sizes.phnum);
+    let mut headers = Vec::with_capacity(usize::from(sizes.phnum));
     headers.push(ProgramHeader {
         segment_type: SegmentType::PHDR,
         flags: PF_R,
@@ -366,7 +365,7 @@ fn program_headers(
         paddr: phdr_vaddr,
         filesz: table_size,
         memsz: table_size,
-        align: to_u64(class.addr_size())?,
+        align: to_u64(class.addr_size()),
     });
     if !builder.interpreters.is_empty() {
         headers.push(section_segment(SegmentType::INTERP, layout, INTERP_NAME)?);
@@ -491,7 +490,7 @@ fn section_headers(layout: &Layout<'_>) -> Result<(Vec<SectionHeader>, Vec<u8>)>
         name: shstrtab_name,
         section_type: SectionType::STRTAB,
         offset: layout.file_end,
-        size: to_u64(strings.len())?,
+        size: to_u64(strings.len()),
         addralign: 1,
         ..SectionHeader::default()
     });
@@ -511,7 +510,7 @@ fn set_section_counts(
         Ok(count) if count < SHN_LORESERVE => header.shnum = count,
         _ => {
             header.shnum = 0;
-            zero.size = to_u64(count)?;
+            zero.size = to_u64(count);
         }
     }
     match u16::try_from(shstrndx) {
@@ -574,9 +573,10 @@ fn sub(a: u64, b: u64) -> Result<u64> {
     a.checked_sub(b).ok_or_else(overflow)
 }
 
-/// Convert a size to `u64`.
-fn to_u64(value: usize) -> Result<u64> {
-    u64::try_from(value).map_err(|_| overflow())
+/// Convert a size to `u64`. The conversion does not fail on targets with a `usize` of 64
+/// bits or less.
+fn to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// Return the error for a layout value that overflows.
