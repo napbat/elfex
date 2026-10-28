@@ -1,6 +1,7 @@
 //! Tests of the section table accessors with a built relocatable file.
 
 use super::{RelocationSection, SectionGroup};
+use crate::ErrorKind;
 use crate::builder::{BuilderSection, ElfBuilder};
 use crate::elf_file::ElfFile;
 use crate::endian::Encoding;
@@ -380,5 +381,88 @@ fn to_image_includes_header_edits() {
     assert_eq!(
         image.load_segments().count(),
         elf.headers().load_segments().count()
+    );
+}
+
+fn structure(error: &crate::Error) -> Option<&str> {
+    error.context()?.structure.as_deref()
+}
+
+#[test]
+fn symbol_accessors_are_empty_without_tables() {
+    let elf = ElfBuilder::new(Encoding::ELF32_LE)
+        .machine(Machine::I386)
+        .add_section(BuilderSection::progbits(".text", SHF_EXECINSTR, vec![0x90]))
+        .try_build()
+        .unwrap();
+    assert_eq!(elf.symbols().unwrap(), None);
+    assert_eq!(elf.symbol_strings().unwrap(), None);
+    assert_eq!(elf.symbol_list().unwrap(), []);
+    assert_eq!(elf.lookup_symbol("foo").unwrap(), None);
+    assert_eq!(elf.relocation_sections().unwrap(), []);
+    assert_eq!(elf.section_groups().unwrap(), []);
+}
+
+#[test]
+fn symbol_strings_follow_the_symtab_link() {
+    let (elf, indices) = relocatable(Encoding::ELF64_BE);
+    let strings = elf.symbol_strings().unwrap().unwrap();
+    let symbols = elf.symbols().unwrap().unwrap();
+    let foo = symbols.get(usize_of(indices.foo)).unwrap();
+    assert_eq!(strings.get_bytes(foo.name).unwrap(), b"foo");
+}
+
+#[test]
+fn malformed_symbol_sections_are_errors() {
+    let (elf, _) = relocatable(Encoding::ELF64_LE);
+    let edited = |edit: fn(&mut crate::section::SectionHeader)| {
+        let mut copy = elf.clone();
+        edit(&mut copy.section_headers_mut()[usize_of(SYMTAB)]);
+        copy
+    };
+
+    let error = edited(|symtab| symtab.size -= 1).symbol_list().unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
+        "{error}"
+    );
+    assert_eq!(structure(&error), Some("SHT_SYMTAB"));
+
+    let unlinked = edited(|symtab| symtab.link = 99);
+    for error in [
+        unlinked.symbol_strings().unwrap_err(),
+        unlinked.lookup_symbol("foo").unwrap_err(),
+    ] {
+        assert!(
+            matches!(error.kind(), ErrorKind::InvalidSection(_)),
+            "{error}"
+        );
+        assert_eq!(structure(&error), Some("SHT_SYMTAB sh_link"));
+    }
+
+    let mut short_indices = elf.clone();
+    short_indices.section_headers_mut()[usize_of(SYMTAB_SHNDX)].size = 3;
+    let error = short_indices.symbol_list().unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
+        "{error}"
+    );
+    assert_eq!(structure(&error), Some("SHT_SYMTAB_SHNDX"));
+}
+
+#[test]
+fn section_relocations_check_the_section_type() {
+    let (mut elf, indices) = relocatable(Encoding::ELF64_BE);
+    let error = elf.section_relocations(usize_of(TEXT)).unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidSection(_)),
+        "{error}"
+    );
+    assert!(elf.section_relocations(99).is_err());
+    // An `sh_entsize` of 0 selects the standard entry size.
+    elf.section_headers_mut()[usize_of(REL_TEXT)].entsize = 0;
+    assert_eq!(
+        elf.section_relocations(usize_of(REL_TEXT)).unwrap(),
+        rel_table(&indices)
     );
 }

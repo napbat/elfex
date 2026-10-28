@@ -405,9 +405,8 @@ impl ElfFile {
 
     /// Return the string table that `sh_link` of the section at `index` gives.
     fn linked_strings(&self, index: usize) -> Result<StringTable> {
-        let link = self.section_header(index)?.link;
-        let link = usize::try_from(link)
-            .map_err(|_| Error::invalid_section(format!("sh_link {link} is out of range")))?;
+        // An index that does not fit in `usize` is out of range, and `section_data` rejects it.
+        let link = usize::try_from(self.section_header(index)?.link).unwrap_or(usize::MAX);
         self.section_data(link)
             .map(StringTable::parse)
             .map_err(|error| error.in_structure(SYMTAB_STRINGS))
