@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a corpus of ELF samples for the compatibility test (`tests/corpus.rs`).
+# Build a corpus of ELF samples for the compatibility test (`tests/corpus`).
 #
 # Usage: scripts/build-corpus.sh <output-directory>
 #
@@ -49,10 +49,14 @@ const char *volatile message_pointer = message;
 void _start(void) { for (;;) { } }
 EOF
 
+# The pointers keep the template instances and the inline function, so that each one gets a
+# COMDAT section group. The static local gives a group with more than one member.
 cat >"$work/comdat.cpp" <<'EOF'
 template <typename T> T twice(T value) { return value + value; }
-int use_int(int value) { return twice(value); }
-long use_long(long value) { return twice(value); }
+inline int &shared_counter() { static int value; return value; }
+int (*twice_int)(int) = &twice<int>;
+long (*twice_long)(long) = &twice<long>;
+int &(*counter_function)() = &shared_counter;
 EOF
 
 # Clang target triples. Each one gives an object file, shared objects in several linker

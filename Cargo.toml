@@ -39,6 +39,10 @@ std = ["nostdio/std"]
 [dependencies]
 nostdio = { version = "0.2", default-features = false }
 
+# The corpus test (`tests/corpus`) reads the JSON output of `llvm-readelf`.
+[dev-dependencies]
+serde_json = "1"
+
 # The examples are command line tools. They use `std` files and processes.
 [[example]]
 name = "elfdump"
