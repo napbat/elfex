@@ -1,4 +1,7 @@
 //! Program headers (`Elf32_Phdr` and `Elf64_Phdr`) and segment constants.
+//!
+//! [`ProgramHeader`] parses and writes one program header. [`SegmentType`] gives the segment
+//! type (`p_type`). The `PF_*` constants (for example [`PF_R`]) are the bits of `p_flags`.
 
 use crate::endian::{ByteReader, Class, Encoding};
 use crate::prelude::*;
