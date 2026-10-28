@@ -2,8 +2,14 @@
 //! unwind tables.
 //!
 //! Each table parses from the contiguous bytes of a section, or of a range that the dynamic
-//! table names. The specialized modules (for example [`crate::reloc`] and [`crate::note`]) also
-//! hold the constants of each area.
+//! table names. Most tables also write their bytes. The specialized modules hold the
+//! constants of each area and an example of each table: [`crate::dynamic`],
+//! [`crate::symbol`], [`crate::strtab`], [`crate::reloc`], [`crate::note`], [`crate::hash`],
+//! [`crate::version`] and [`crate::eh_frame`].
+//!
+//! [`SectionGroup`] and [`RelocationSection`] are the results of [`ElfFile`](crate::ElfFile)
+//! accessors. [`DynamicRelocations`] and [`VersionTables`] are the results of the dynamic
+//! linking accessors (see [`crate::linking`]).
 
 pub use crate::dynamic::{DynamicEntry, DynamicInfo, DynamicTable, DynamicTag};
 pub use crate::eh_frame::{
