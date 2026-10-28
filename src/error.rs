@@ -335,3 +335,87 @@ impl From<ErrorKind> for Error {
         Self::new(kind)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::error::Error as _;
+
+    #[test]
+    fn context_setters_fill_the_context_in_order() {
+        let error = Error::invalid_table("bad entry")
+            .at_offset(0x40)
+            .at_address(0x1000)
+            .in_structure("Elf64_Sym");
+        let context = error.context().unwrap();
+        assert_eq!(context.file_offset, Some(0x40));
+        assert_eq!(context.address, Some(0x1000));
+        assert_eq!(context.structure.as_deref(), Some("Elf64_Sym"));
+        assert_eq!(context.details, None);
+        assert_eq!(
+            error.to_string(),
+            "Invalid table: bad entry (offset 0x40, address 0x1000, in Elf64_Sym)"
+        );
+
+        let details = ErrorContext::new()
+            .in_structure("NT_FILE")
+            .with_details("entry 3");
+        assert_eq!(details.to_string(), "in NT_FILE, entry 3");
+        let error = Error::generic("stop").with_context(details.clone());
+        assert_eq!(error.context(), Some(&details));
+        assert_eq!(error.to_string(), "stop (in NT_FILE, entry 3)");
+    }
+
+    #[test]
+    fn empty_context_is_not_displayed() {
+        assert!(ErrorContext::new().is_empty());
+        assert!(!ErrorContext::new().at_offset(0).is_empty());
+        assert!(!ErrorContext::new().with_details("x").is_empty());
+        let error = Error::invalid_utf8().with_context(ErrorContext::new());
+        assert_eq!(error.to_string(), ErrorKind::InvalidUtf8.to_string());
+        assert_eq!(Error::invalid_utf8().to_string(), error.to_string());
+    }
+
+    #[test]
+    fn kind_display_reports_the_values() {
+        let cases = [
+            (ErrorKind::InvalidClass(7), "7"),
+            (ErrorKind::InvalidDataEncoding(9), "9"),
+            (
+                ErrorKind::BufferTooSmall {
+                    expected: 64,
+                    actual: 12,
+                },
+                "expected 64 bytes, got 12",
+            ),
+            (ErrorKind::InvalidHeader("e_ehsize".into()), "e_ehsize"),
+            (ErrorKind::InvalidSegment("p_align".into()), "p_align"),
+            (ErrorKind::InvalidSection("sh_link".into()), "sh_link"),
+            (ErrorKind::InvalidTable("DT_HASH".into()), "DT_HASH"),
+            (
+                ErrorKind::OffsetOutOfBounds {
+                    offset: 0x123,
+                    size: 16,
+                },
+                "0x123",
+            ),
+            (ErrorKind::InvalidAddress(0xbeef), "0xbeef"),
+            (ErrorKind::ValueOutOfRange("e_entry".into()), "e_entry"),
+            (ErrorKind::Generic("custom".into()), "custom"),
+        ];
+        for (kind, value) in cases {
+            let text = Error::from(kind).to_string();
+            assert!(text.contains(value), "{text} does not contain {value}");
+        }
+        assert!(Error::invalid_magic().to_string().contains("\\x7fELF"));
+    }
+
+    #[test]
+    fn io_errors_keep_their_source() {
+        let error = Error::from(nostdio::interrupted());
+        assert!(matches!(error.kind(), ErrorKind::Io(io) if nostdio::is_interrupted(io)));
+        assert!(error.source().is_some());
+        assert!(error.to_string().starts_with("I/O error: "));
+        assert!(Error::invalid_address(0).source().is_none());
+    }
+}
