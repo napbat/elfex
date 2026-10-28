@@ -114,10 +114,10 @@ fn default_bucket_count(symbols: usize) -> u32 {
     best
 }
 
-/// Convert a count from the table to `usize`, or return an `InvalidTable` error.
-fn to_usize(value: u32) -> Result<usize> {
-    usize::try_from(value)
-        .map_err(|_| Error::invalid_table(format!("{value} does not fit in the address space")))
+/// Convert a count from the table to `usize`. A `usize` has at least 32 bits on the targets
+/// of elfex, so the conversion does not fail.
+fn to_usize(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 /// Convert a length to a 32-bit table field, or return a `ValueOutOfRange` error.
@@ -140,9 +140,8 @@ fn check_entry_size(entry_size: usize) -> Result<()> {
 
 /// Read the word at `index` of a System V hash table.
 fn read_word(bytes: &[u8], encoding: Encoding, entry_size: usize, index: usize) -> Result<u32> {
-    let offset = index
-        .checked_mul(entry_size)
-        .ok_or_else(|| Error::invalid_table("the hash table word offset overflows"))?;
+    // An offset after the end of `bytes` gives a `BufferTooSmall` error.
+    let offset = index.saturating_mul(entry_size);
     if entry_size == 8 {
         let value = encoding.read_u64(bytes, offset)?;
         u32::try_from(value).map_err(|_| {
@@ -191,8 +190,8 @@ impl SysvHashTable {
     fn parse_words(bytes: &[u8], encoding: Encoding, entry_size: usize) -> Result<Self> {
         let nbucket = read_word(bytes, encoding, entry_size, 0)?;
         let nchain = read_word(bytes, encoding, entry_size, 1)?;
-        let bucket_len = to_usize(nbucket)?;
-        let chain_len = to_usize(nchain)?;
+        let bucket_len = to_usize(nbucket);
+        let chain_len = to_usize(nchain);
         let needed = bucket_len
             .checked_add(chain_len)
             .and_then(|words| words.checked_add(2))
@@ -304,11 +303,11 @@ impl SysvHashTable {
         } else {
             nbucket
         };
-        let mut buckets = vec![0_u32; to_usize(nbucket)?];
+        let mut buckets = vec![0_u32; to_usize(nbucket)];
         let mut chains = vec![0_u32; names.len()];
         for (index, name) in names.iter().enumerate().skip(1).rev() {
             let symbol = len_u32(index, "symbol index")?;
-            let bucket = to_usize(sysv_hash(name) % nbucket)?;
+            let bucket = to_usize(sysv_hash(name) % nbucket);
             if let (Some(chain), Some(head)) = (chains.get_mut(index), buckets.get_mut(bucket)) {
                 *chain = *head;
                 *head = symbol;

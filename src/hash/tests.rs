@@ -311,6 +311,25 @@ fn gnu_empty_table() {
     }
 }
 
+/// An empty Bloom filter passes all names to the buckets. An empty bucket or a bucket before
+/// `symoffset` has no symbols.
+#[test]
+fn gnu_lookup_with_empty_bloom_filter() {
+    for bucket in [0, 2] {
+        let table = GnuHashTable {
+            class: Class::Elf64,
+            symoffset: 3,
+            bloom_shift: 6,
+            bloom: Vec::new(),
+            buckets: vec![bucket; 2],
+            chains: vec![gnu_hash(b"printf") | 1],
+        };
+        assert!(table.maybe_contains(gnu_hash(b"printf")));
+        assert!(table.maybe_contains(0));
+        assert_eq!(table.lookup(b"printf", name_of(&NAMES)), None);
+    }
+}
+
 #[test]
 fn gnu_build_rejects_bad_input() {
     assert_invalid_table(GnuHashTable::build(&NAMES[1..], 0, Encoding::ELF32_LE, 0));

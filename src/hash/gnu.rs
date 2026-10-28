@@ -75,8 +75,8 @@ impl GnuHashTable {
         let bloom_size = encoding.read_u32(bytes, 8)?;
         let bloom_shift = encoding.read_u32(bytes, 12)?;
         let word = encoding.addr_size();
-        let bloom_len = to_usize(bloom_size)?;
-        let bucket_len = to_usize(nbuckets)?;
+        let bloom_len = to_usize(bloom_size);
+        let bucket_len = to_usize(nbuckets);
         let buckets_start = bloom_len
             .checked_mul(word)
             .and_then(|size| size.checked_add(HEADER_SIZE));
@@ -176,13 +176,9 @@ impl GnuHashTable {
             return true;
         }
         let bits = word_bits(self.class);
-        let index = (hash / bits) & (words - 1);
-        let Some(&word) = usize::try_from(index)
-            .ok()
-            .and_then(|index| self.bloom.get(index))
-        else {
-            return true;
-        };
+        // The index is less than `words`, so the word is present.
+        let index = to_usize((hash / bits) & (words - 1));
+        let word = self.bloom.get(index).copied().unwrap_or(u64::MAX);
         let second = hash.checked_shr(self.bloom_shift).unwrap_or(0);
         let mask = (1_u64 << (hash % bits)) | (1_u64 << (second % bits));
         word & mask == mask
@@ -271,13 +267,13 @@ impl GnuHashTable {
         let bucket_of = |position: usize| hashes.get(position).map(|hash| hash % nbuckets);
         let mut order: Vec<usize> = (0..names.len()).collect();
         order.sort_by_key(|&position| bucket_of(position));
-        let mut buckets = vec![0_u32; to_usize(nbuckets)?];
+        let mut buckets = vec![0_u32; to_usize(nbuckets)];
         let mut chains = Vec::with_capacity(order.len());
         for (new_position, &old_position) in order.iter().enumerate() {
             let hash = hashes.get(old_position).copied().unwrap_or_default();
             let bucket = hash % nbuckets;
             let symbol = symoffset.saturating_add(len_u32(new_position, "symbol index")?);
-            if let Some(head) = buckets.get_mut(to_usize(bucket)?)
+            if let Some(head) = buckets.get_mut(to_usize(bucket))
                 && *head == 0
             {
                 *head = symbol;
@@ -318,7 +314,7 @@ fn chain_len(
     else {
         return Ok(0);
     };
-    let mut index = to_usize(last_start - symoffset)?;
+    let mut index = to_usize(last_start - symoffset);
     loop {
         let value = index
             .checked_mul(4)
@@ -329,9 +325,8 @@ fn chain_len(
                     "the chain of symbol {last_start} continues after the end of the data"
                 ))
             })?;
-        index = index
-            .checked_add(1)
-            .ok_or_else(|| Error::invalid_table("the chain array length overflows"))?;
+        // The read above fails before `index` can reach `usize::MAX`.
+        index += 1;
         if value & 1 != 0 {
             return Ok(index);
         }
@@ -358,9 +353,9 @@ fn build_bloom(hashes: &[u32], class: Class) -> Result<(Vec<u64>, u32)> {
     let bloom_shift = log2.min(31);
     let words = 1_u32 << (bloom_shift - word_log2);
     let bits = word_bits(class);
-    let mut bloom = vec![0_u64; to_usize(words)?];
+    let mut bloom = vec![0_u64; to_usize(words)];
     for &hash in hashes {
-        let index = to_usize((hash / bits) & (words - 1))?;
+        let index = to_usize((hash / bits) & (words - 1));
         if let Some(word) = bloom.get_mut(index) {
             *word |= (1_u64 << (hash % bits)) | (1_u64 << ((hash >> bloom_shift) % bits));
         }
