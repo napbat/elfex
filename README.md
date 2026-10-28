@@ -493,6 +493,46 @@ cargo +nightly fuzz run fuzz-elf-image
 cargo +nightly fuzz run fuzz-elf-file
 ```
 
+### Compatibility tests with real files
+
+The ignored test `tests/corpus` compares Elfex with `llvm-readelf` on real ELF files. For each
+file, it checks these items:
+
+- The parse, the lossless round trip and the validation.
+- The headers, sections, segments, dynamic table, symbols, relocations, notes, versions and
+  section groups, against the JSON and text output of `llvm-readelf`.
+- All accessors of `ElfFile` and `ElfImage`, the `.eh_frame` parser, the symbol lookup and the
+  mapped image.
+
+Make a corpus with `scripts/build-corpus.sh` (it needs clang and ld.lld), then run the test on
+Linux or WSL. Add the system directories that you want to check:
+
+```bash
+scripts/build-corpus.sh ~/elfex-corpus
+ELFEX_CORPUS=~/elfex-corpus:/usr/bin:/usr/lib/x86_64-linux-gnu:/lib/modules \
+    cargo test --release --test corpus -- --ignored --nocapture corpus
+```
+
+These environment variables control the test:
+
+| Variable | Use |
+| --- | --- |
+| `ELFEX_CORPUS` | The files and directories to check, separated as in `PATH`. The test walks the directories recursively and selects the ELF files |
+| `ELFEX_CORPUS_MAX_BYTES` | The size of the largest file to check. The default is 512 MiB |
+| `ELFEX_READELF` | The reference tool. The default is `llvm-readelf`. Without the tool, the test does only the self-consistency checks |
+
+The test prints each failure and a summary table, and fails if a category has failures.
+`tests/corpus/defects.rs` lists the known defects of toolchain outputs that the test accepts.
+
+The ignored test `edit_and_run` edits the programs in `gnu/x86_64`, `gnu/aarch64` and
+`gnu/powerpc64le` of the corpus with each `ElfFile` edit. Then it runs each edited program and
+compares the output with the output of the original program. It runs the AArch64 and POWER
+programs with `qemu-user`:
+
+```bash
+ELFEX_CORPUS=~/elfex-corpus cargo test --test corpus -- --ignored --nocapture edit_and_run
+```
+
 ## License
 
 Licensed under either of
