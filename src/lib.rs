@@ -41,22 +41,39 @@
 //!
 //! ## Example
 //!
-//! ```no_run
-//! use elfex::{ElfFile, ElfHeaders, ElfImage};
+//! ```
+//! use elfex::section::{SHF_ALLOC, SHF_EXECINSTR};
+//! use elfex::{BuilderSection, ElfBuilder, ElfFile, ElfHeaders, ElfImage, Encoding, Machine};
 //!
-//! # let bytes: &[u8] = &[];
+//! // Build a small x86-64 executable. The code is `xor edi, edi; mov eax, 60; syscall`.
+//! let bytes = ElfBuilder::new(Encoding::ELF64_LE)
+//!     .machine(Machine::X86_64)
+//!     .add_section(BuilderSection::progbits(
+//!         ".text",
+//!         SHF_ALLOC | SHF_EXECINSTR,
+//!         vec![0x31, 0xff, 0xb8, 0x3c, 0, 0, 0, 0x0f, 0x05],
+//!     ))
+//!     .entry_in_section(".text", 0)
+//!     .try_build()?
+//!     .try_build()?;
+//!
 //! // ElfFile keeps all bytes and gives the sections.
-//! let file = ElfFile::parse(bytes).unwrap();
-//! println!("64-bit: {}", file.is_64bit());
+//! let file = ElfFile::parse(&bytes)?;
+//! assert!(file.is_64bit());
+//! assert!(file.section_by_name(".text").is_some());
 //!
 //! // ElfImage gives the loader view: the segments.
-//! let image = ElfImage::parse(bytes).unwrap();
-//! println!("{} PT_LOAD segments", image.load_segments().count());
+//! let image = ElfImage::parse(&bytes)?;
+//! assert_eq!(image.load_segments().count(), 2);
 //!
-//! // Or load only the headers.
-//! let headers = ElfHeaders::from_slice(bytes).unwrap();
-//! println!("Entry point: {:#x}", headers.entry_point());
+//! // ElfHeaders reads only the headers.
+//! let headers = ElfHeaders::from_slice(&bytes)?;
+//! assert_eq!(headers.entry_point(), file.entry_point());
+//! # Ok::<(), elfex::Error>(())
 //! ```
+//!
+//! The `examples/` directory of the repository has four command line tools: `elfdump`,
+//! `elfpatch`, `dump-process` and `build-tiny`.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
