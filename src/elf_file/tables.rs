@@ -44,7 +44,50 @@ pub struct RelocationSection {
 
 /// A section group (`SHT_GROUP`) of an [`ElfFile`].
 ///
-/// [`ElfFile::section_groups`] returns this type.
+/// [`ElfFile::section_groups`] returns this type. The crate has no section group writer: write
+/// the flags and the member indices as 32-bit words.
+///
+/// # Examples
+///
+/// ```
+/// use elfex::section::{GRP_COMDAT, SHF_EXECINSTR, SHF_GROUP, SectionType};
+/// use elfex::symbol::{NewSymbol, SymbolBinding, SymbolTableBuilder, SymbolType};
+/// use elfex::{BuilderSection, ElfBuilder, Encoding, FileType};
+///
+/// let encoding = Encoding::ELF64_LE;
+/// // The signature symbol "foo" is in section 1, the member of the group.
+/// let mut builder = SymbolTableBuilder::new(encoding);
+/// builder.add(NewSymbol::new("foo", SymbolBinding::GLOBAL, SymbolType::FUNC).with_shndx(1));
+/// let symbols = builder.try_build()?;
+/// let mut words = Vec::new();
+/// encoding.write_u32(&mut words, GRP_COMDAT);
+/// encoding.write_u32(&mut words, 1);
+///
+/// let table = |name: &str, section_type, data, link: &str, info| BuilderSection {
+///     section_type,
+///     link_name: Some(link.into()),
+///     info,
+///     ..BuilderSection::progbits(name, 0, data)
+/// };
+/// let (signature, locals) = (symbols.indices[0], symbols.first_non_local);
+/// let file = ElfBuilder::new(encoding)
+///     .file_type(FileType::REL)
+///     .add_section(BuilderSection::progbits(".text.foo", SHF_EXECINSTR | SHF_GROUP, vec![0xc3]))
+///     .add_section(table(".group", SectionType::GROUP, words, ".symtab", signature))
+///     .add_section(table(".symtab", SectionType::SYMTAB, symbols.symbols, ".strtab", locals))
+///     .add_section(BuilderSection {
+///         section_type: SectionType::STRTAB,
+///         ..BuilderSection::progbits(".strtab", 0, symbols.strings)
+///     })
+///     .try_build()?;
+///
+/// let groups = file.section_groups()?;
+/// assert_eq!(groups.len(), 1);
+/// assert_eq!(groups[0].flags, GRP_COMDAT);
+/// assert_eq!(groups[0].signature.as_deref(), Some("foo"));
+/// assert_eq!(groups[0].members, [1]);
+/// # Ok::<(), elfex::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct SectionGroup {
