@@ -102,8 +102,7 @@ impl ElfFile {
             self.section_header_mut(index)?.size = 0;
             return Ok(());
         }
-        let new_size = u64::try_from(data.len())
-            .map_err(|_| Error::value_out_of_range("the section data is too large"))?;
+        let new_size = u64::try_from(data.len()).unwrap_or(u64::MAX);
         if new_size <= header.size {
             let range = self.data_range(header.offset, header.size)?;
             let (used, rest) = self.data[range].split_at_mut(data.len());
@@ -171,8 +170,7 @@ impl ElfFile {
         } else {
             self.add_section_name(&section.name)?
         };
-        let size = u64::try_from(section.data.len())
-            .map_err(|_| Error::value_out_of_range("the section data is too large"))?;
+        let size = u64::try_from(section.data.len()).unwrap_or(u64::MAX);
         let offset = if is_nobits {
             self.file_end()
         } else {
@@ -342,8 +340,7 @@ impl ElfFile {
         let section = self.interp_section(&interp);
         let mut bytes = path.as_bytes().to_vec();
         bytes.push(0);
-        let len = u64::try_from(bytes.len())
-            .map_err(|_| Error::value_out_of_range("the interpreter path is too long"))?;
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
 
         let (offset, vaddr) = if len <= interp.filesz {
             let range = self.data_range(interp.offset, interp.filesz)?;
@@ -396,10 +393,9 @@ impl ElfFile {
         if !self.program_table_can_grow() {
             self.relocate_program_table()?;
         }
-        let size = u64::try_from(data.len())
-            .map_err(|_| Error::value_out_of_range("the segment data is too large"))?;
+        let size = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let offset = align_up(self.file_end(), align)?;
-        let vaddr = self.next_vaddr(offset, align)?;
+        let vaddr = self.next_vaddr(align)?;
         self.check_range(offset, size)?;
         self.check_range(vaddr, size)?;
         let offset = self.append(data, align)?;
@@ -500,8 +496,7 @@ impl ElfFile {
         let table_size = count
             .checked_mul(entry_size)
             .ok_or_else(|| Error::value_out_of_range("the program header table is too large"))?;
-        let size = u64::try_from(table_size)
-            .map_err(|_| Error::value_out_of_range("the program header table is too large"))?;
+        let size = u64::try_from(table_size).unwrap_or(u64::MAX);
         let page = self.load_page_size();
         let offset = align_up(self.file_end().max(image_size), page)?;
         let vaddr = origin
@@ -540,16 +535,15 @@ impl ElfFile {
         Ok(())
     }
 
-    /// Return the virtual address for a new segment at file offset `offset`: the end of the
-    /// highest `PT_LOAD` segment, rounded up to `align`, plus `offset` modulo `align`.
-    fn next_vaddr(&self, offset: u64, align: u64) -> Result<u64> {
+    /// Return the virtual address for a new segment: the end of the highest `PT_LOAD`
+    /// segment, rounded up to `align`. The file offset of the segment is a multiple of
+    /// `align`, so the offset and the address agree modulo `align`.
+    fn next_vaddr(&self, align: u64) -> Result<u64> {
         let end = self
             .headers
             .image_end()
             .ok_or_else(|| Error::invalid_segment("the end of the PT_LOAD segments overflows"))?;
-        align_up(end, align)?
-            .checked_add(offset % align)
-            .ok_or_else(|| Error::value_out_of_range("the segment address overflows"))
+        align_up(end, align)
     }
 
     /// Return the largest power-of-two `p_align` of the `PT_LOAD` segments, at least 0x1000.
@@ -574,15 +568,14 @@ impl ElfFile {
     }
 
     /// Insert a `PT_LOAD` program header after the `PT_LOAD` headers with a lower or equal
-    /// address.
+    /// address. The address of a new segment is at or after the end of the image, so such a
+    /// header exists if the file has a `PT_LOAD` segment. Else the header goes at the end.
     fn insert_load(&mut self, segment: ProgramHeader) {
         let headers = &mut self.headers.program_headers;
         let position = headers
             .iter()
             .rposition(|header| header.is_load() && header.vaddr <= segment.vaddr)
-            .map(|index| index + 1)
-            .or_else(|| headers.iter().position(ProgramHeader::is_load))
-            .unwrap_or(headers.len());
+            .map_or(headers.len(), |index| index + 1);
         headers.insert(position, segment);
     }
 
@@ -651,8 +644,7 @@ impl ElfFile {
         let name_offset = u32::try_from(content.len()).unwrap_or(u32::MAX);
         content.extend_from_slice(name.as_bytes());
         content.push(0);
-        let size = u64::try_from(content.len())
-            .map_err(|_| Error::value_out_of_range("the section name is too long"))?;
+        let size = u64::try_from(content.len()).unwrap_or(u64::MAX);
         let offset = self.append(content, 1)?;
         self.headers.section_headers = vec![
             SectionHeader::default(),
@@ -693,8 +685,7 @@ impl ElfFile {
             .map_err(|_| Error::value_out_of_range("the section name string table is too large"))?;
         content.extend_from_slice(name.as_bytes());
         content.push(0);
-        let size = u64::try_from(content.len())
-            .map_err(|_| Error::value_out_of_range("the section name string table is too large"))?;
+        let size = u64::try_from(content.len()).unwrap_or(u64::MAX);
         let offset = self.append(content, header.addralign)?;
         let table = self.section_header_mut(index)?;
         table.offset = offset;
@@ -758,8 +749,9 @@ impl ElfFile {
         Ok(offset)
     }
 
-    /// Write `data` at file offset `offset`, which must not be before the end of the file.
-    /// Fill the bytes between the end of the data buffer and `offset` with zeros.
+    /// Write `data` at file offset `offset`. Fill the bytes between the end of the data buffer
+    /// and `offset` with zeros. The caller makes sure that `offset` is not before the end of
+    /// the file ([`Self::file_end`]).
     ///
     /// # Errors
     ///
@@ -767,18 +759,12 @@ impl ElfFile {
     ///   section header table that `e_shoff` gives goes past the end of the data buffer and
     ///   the new bytes would be in it. The parser cannot read such a table, but it reads the
     ///   new bytes as section headers if the file grows.
-    /// - Return a generic error if `offset` is before the end of the file or the file is
-    ///   too large to allocate.
+    /// - Return a generic error if the file is too large to allocate.
     fn append_at(&mut self, offset: u64, data: Vec<u8>) -> Result<()> {
         let too_large = || Error::generic("the file is too large to allocate");
-        if offset < self.file_end() {
-            return Err(Error::generic(
-                "the end of the file is inside the data buffer",
-            ));
-        }
         let start = usize::try_from(offset).map_err(|_| too_large())?;
         let end = start.checked_add(data.len()).ok_or_else(too_large)?;
-        let new_bytes = self.file_size()..u64::try_from(end).map_err(|_| too_large())?;
+        let new_bytes = self.file_size()..u64::try_from(end).unwrap_or(u64::MAX);
         if overlaps(&self.raw_section_table_range(), &new_bytes) {
             return Err(Error::invalid_section(
                 "the section header table goes past the end of the file: appended bytes would change it",

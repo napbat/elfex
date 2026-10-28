@@ -172,8 +172,7 @@ impl ElfFile {
         mut zero: Option<&mut SectionHeader>,
     ) -> Result<()> {
         let raw_zero = zero.as_deref().copied().or_else(|| self.raw_section_zero());
-        let phnum = u64::try_from(self.headers.program_headers.len())
-            .map_err(|_| Error::value_out_of_range("too many program headers"))?;
+        let phnum = u64::try_from(self.headers.program_headers.len()).unwrap_or(u64::MAX);
         if resolved_phnum(header, raw_zero.as_ref()) != phnum {
             match u16::try_from(phnum) {
                 Ok(count) if count < PN_XNUM => {
@@ -200,8 +199,7 @@ impl ElfFile {
         let Some(zero) = zero else {
             return Ok(());
         };
-        let shnum = u64::try_from(self.headers.section_headers.len())
-            .map_err(|_| Error::value_out_of_range("too many section headers"))?;
+        let shnum = u64::try_from(self.headers.section_headers.len()).unwrap_or(u64::MAX);
         if resolved_shnum(header, Some(&*zero)) != shnum {
             match u16::try_from(shnum) {
                 Ok(count) if count < SHN_LORESERVE => {
@@ -339,7 +337,8 @@ impl ElfFile {
 ///
 /// Each entry takes `entry_size` bytes. The function starts from the bytes of `base` in the
 /// table range, so that the bytes after each entry structure stay as they are. `write`
-/// appends the structure of one entry to a buffer.
+/// appends the structure of one entry to a buffer. [`ElfFile::try_build`] sets `entry_size`
+/// to at least the structure size, so the structure fits in its entry.
 fn table_image<T>(
     base: &[u8],
     offset: u64,
@@ -375,10 +374,9 @@ fn table_image<T>(
     {
         buffer.clear();
         write(index, entry, &mut buffer)?;
-        let target = slot
-            .get_mut(..buffer.len())
-            .ok_or_else(|| Error::value_out_of_range("the header table entry size is too small"))?;
-        target.copy_from_slice(&buffer);
+        for (target, byte) in slot.iter_mut().zip(&buffer) {
+            *target = *byte;
+        }
     }
     Ok(image)
 }

@@ -6,6 +6,15 @@ use crate::program::{PF_R, PF_W, PF_X, SegmentType};
 use crate::section::{SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_WRITE};
 use crate::validation::ValidationCode;
 
+mod accessors;
+mod building;
+mod editing;
+
+/// Return the error kind of a failed result.
+fn error_kind<T: core::fmt::Debug>(result: Result<T>) -> ErrorKind {
+    result.unwrap_err().kind
+}
+
 const ENCODINGS: [Encoding; 4] = [
     Encoding::ELF32_LE,
     Encoding::ELF32_BE,
