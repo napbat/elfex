@@ -347,7 +347,15 @@ fn table_image<T>(
     entries: &[T],
     write: impl Fn(usize, &T, &mut Vec<u8>) -> Result<()>,
 ) -> Result<Vec<u8>> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
     let stride = usize::from(entry_size);
+    if stride == 0 {
+        return Err(Error::invalid_header(
+            "the header table has entries, but its entry size is 0",
+        ));
+    }
     let len = entries
         .len()
         .checked_mul(stride)

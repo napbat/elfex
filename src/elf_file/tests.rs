@@ -768,3 +768,16 @@ fn does_not_remove_a_group_member() {
     elf.remove_section(group).unwrap();
     elf.remove_section(5).unwrap();
 }
+
+#[test]
+fn builds_a_header_with_zero_table_entry_sizes() {
+    // Fuzz regression: a header without tables and with zero entry sizes made the build
+    // divide the empty table image into chunks of size 0, which panics.
+    let mut header = FileHeader::new(Encoding::ELF64_BE, FileType::NONE, Machine::NONE);
+    header.phentsize = 0;
+    header.shentsize = 0;
+    header.shoff = 0x83_ffff_ffe8;
+    let bytes = header.to_bytes().unwrap();
+    let elf = ElfFile::parse(&bytes).unwrap();
+    assert_eq!(elf.try_build().unwrap(), bytes);
+}
