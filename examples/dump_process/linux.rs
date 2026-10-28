@@ -1,6 +1,6 @@
 //! The Linux implementation: `/proc/<pid>/maps`, `/proc/<pid>/mem` and the summary.
 
-use elfex::{ElfImage, ParseOptions, ReadAt, SegmentType};
+use elfex::{ElfImage, ParseOptions, ReadAt};
 use std::fmt::Write;
 use std::fs::File;
 use std::os::unix::fs::FileExt;
@@ -188,39 +188,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Arguments
     }))
 }
 
-/// Change the `d_ptr` values that glibc relocated back to virtual addresses of the file.
-/// Then other tools can read the dynamic table of the dump. Return the number of changes.
-fn restore_dynamic_pointers(image: &mut ElfImage) -> elfex::Result<usize> {
-    let Some(mut table) = image.dynamic()? else {
-        return Ok(0);
-    };
-    let machine = image.machine();
-    let mut changed = 0;
-    for entry in &mut table.entries {
-        let resolved = image.resolve_pointer(entry.value);
-        if entry.tag.is_pointer(machine) && resolved != entry.value {
-            entry.value = resolved;
-            changed += 1;
-        }
-    }
-    let Some(segment) = image
-        .segment(SegmentType::DYNAMIC)
-        .map(|segment| segment.header)
-    else {
-        return Ok(0);
-    };
-    if changed > 0 {
-        let size = usize::try_from(segment.filesz)
-            .map_err(|_| elfex::Error::generic("the PT_DYNAMIC segment is too large"))?;
-        let bytes = table.write_padded(image.encoding(), size)?;
-        image.write_vaddr(segment.vaddr, &bytes)?;
-    }
-    Ok(changed)
-}
-
-/// Write the image as a raw ELF file without sections.
+/// Write the image as a raw ELF file without sections. First change the `d_ptr` values that
+/// glibc relocated back to virtual addresses of the file, so that other tools can read the
+/// dynamic table of the dump.
 fn write_dump(mut image: ElfImage, output: &str) -> elfex::Result<()> {
-    let changed = restore_dynamic_pointers(&mut image)?;
+    let changed = image.restore_dynamic_pointers()?;
     let bytes = image.try_build()?;
     std::fs::write(output, &bytes)?;
     println!(

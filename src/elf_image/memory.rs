@@ -17,7 +17,7 @@ fn memory_contains(header: &ProgramHeader, vaddr: u64, len: u64) -> bool {
 
 impl ElfImage {
     /// Return the first `PT_LOAD` segment whose memory range contains `len` bytes at `vaddr`.
-    fn load_segment_for(&self, vaddr: u64, len: u64) -> Option<&Segment> {
+    pub(super) fn load_segment_for(&self, vaddr: u64, len: u64) -> Option<&Segment> {
         self.load_segments()
             .find(|segment| memory_contains(&segment.header, vaddr, len))
     }

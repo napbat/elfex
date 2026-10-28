@@ -5,8 +5,7 @@
 //! loader-mapped image in which glibc changed the `d_ptr` values to runtime addresses.
 
 use super::ElfImage;
-use crate::Result;
-use crate::dynamic::{DynamicTable, DynamicTag};
+use crate::dynamic::{DynamicEntry, DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
 use crate::hash::{GnuHashTable, SysvHashTable};
@@ -19,6 +18,7 @@ use crate::prelude::*;
 use crate::program::SegmentType;
 use crate::strtab::StringTable;
 use crate::symbol::{NamedSymbol, SymbolTable};
+use crate::{Error, Result};
 
 impl AddressSpace for ElfImage {
     fn encoding(&self) -> Encoding {
@@ -116,6 +116,80 @@ impl ElfImage {
     /// segment contains the `PT_DYNAMIC` address.
     pub fn dynamic(&self) -> Result<Option<DynamicTable>> {
         linking::dynamic_table(self)
+    }
+
+    /// Write the `d_ptr` values of the dynamic table back as virtual addresses of the file.
+    /// Return the number of changed entries.
+    ///
+    /// The function changes each entry with a pointer tag (`DynamicTag::is_pointer`) for which
+    /// [`Self::resolve_pointer`] gives a different value. Thus it undoes the change that glibc
+    /// makes in a loaded process. The function writes only these `d_un` fields, in place:
+    ///
+    /// - In the own data of the `PT_DYNAMIC` segment, if it has data.
+    /// - In the `PT_LOAD` memory at the `PT_DYNAMIC` address, if a `PT_LOAD` segment contains
+    ///   the entry.
+    ///
+    /// Return 0 if the image has no `PT_DYNAMIC` segment or no load bias. A second call
+    /// returns 0.
+    ///
+    /// # Errors
+    ///
+    /// - Return [`ErrorKind::InvalidAddress`](crate::ErrorKind::InvalidAddress) if no
+    ///   `PT_LOAD` segment contains the `PT_DYNAMIC` address, and the segment has no data.
+    /// - Return [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange) if an ELF32
+    ///   value does not fit in 32 bits.
+    pub fn restore_dynamic_pointers(&mut self) -> Result<usize> {
+        let Some(table) = self.dynamic()? else {
+            return Ok(0);
+        };
+        let machine = self.machine();
+        let changes: Vec<(usize, u64)> = table
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.tag.is_pointer(machine))
+            .filter_map(|(position, entry)| {
+                let value = self.resolve_pointer(entry.value);
+                (value != entry.value).then_some((position, value))
+            })
+            .collect();
+        let Some(dynamic) = self
+            .segments
+            .iter()
+            .position(|segment| segment.header.segment_type == SegmentType::DYNAMIC)
+        else {
+            return Ok(0);
+        };
+        let encoding = self.encoding();
+        let size = DynamicEntry::size(encoding.class);
+        let vaddr = self.segments[dynamic].header.vaddr;
+        for &(position, value) in &changes {
+            // The parser stops at the first `DT_NULL` entry. Thus entry `position` is at byte
+            // `position * size`, and its `d_un` field follows the `d_tag` field.
+            let offset = position
+                .checked_mul(size)
+                .and_then(|offset| offset.checked_add(encoding.addr_size()))
+                .ok_or_else(|| Error::value_out_of_range("the dynamic table is too large"))?;
+            let mut bytes = Vec::with_capacity(encoding.addr_size());
+            encoding.write_addr(&mut bytes, value)?;
+            let address = u64::try_from(offset)
+                .ok()
+                .and_then(|offset| vaddr.checked_add(offset))
+                .ok_or_else(|| Error::invalid_address(vaddr))?;
+            let own = &mut self.segments[dynamic].data;
+            if own.is_empty() {
+                self.write_vaddr(address, &bytes)?;
+                continue;
+            }
+            encoding.put_addr(own, offset, value)?;
+            if self
+                .load_segment_for(address, u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                .is_some()
+            {
+                self.write_vaddr(address, &bytes)?;
+            }
+        }
+        Ok(changes.len())
     }
 
     /// Return the dynamic string table at `DT_STRTAB` with the size `DT_STRSZ`.

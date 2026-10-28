@@ -95,6 +95,11 @@ impl ElfImage {
     /// has no sections. `e_phnum` is the number of segments. If `e_phentsize` is smaller than
     /// the program header structure, the function uses the structure size.
     ///
+    /// The function writes the segment data as it is. In the memory of a live process, glibc
+    /// changed many `d_ptr` values of the dynamic table to runtime addresses. For a dump of
+    /// such a process, call [`Self::restore_dynamic_pointers`] first. Then other tools can
+    /// read the dynamic table of the output file.
+    ///
     /// # Errors
     ///
     /// - Return [`ErrorKind::InvalidHeader`](crate::ErrorKind::InvalidHeader) if the image has

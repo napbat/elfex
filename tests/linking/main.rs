@@ -274,6 +274,27 @@ fn check_all_views(spec: Spec) {
     let (init_address, init_value) = fixture.tables.relocated[0];
     assert_eq!(init_address, fixture.layout.address(".init_array"));
     check_linking(&image, &fixture, wrap(spec, init_value + bias));
+
+    // Restore the file addresses, as for a dump of the process.
+    let mut restored = image.clone();
+    let pointers = fixture
+        .tables
+        .dynamic
+        .entries
+        .iter()
+        .filter(|entry| entry.tag.is_pointer(spec.machine))
+        .count();
+    assert_eq!(restored.restore_dynamic_pointers().unwrap(), pointers);
+    assert_eq!(restored.dynamic().unwrap().unwrap(), fixture.tables.dynamic);
+    assert_eq!(restored.restore_dynamic_pointers().unwrap(), 0);
+    let dump = ElfImage::parse(&restored.try_build().unwrap()).unwrap();
+    assert_eq!(dump.dynamic().unwrap().unwrap(), fixture.tables.dynamic);
+    // Only the `d_ptr` fields change.
+    let start = to_usize(fixture.layout.address(".dynamic") - origin);
+    let mut expected = mapped.clone();
+    let table = fixture.tables.dynamic.write(spec.encoding).unwrap();
+    expected[start..start + table.len()].copy_from_slice(&table);
+    assert_eq!(restored.to_mapped_image().unwrap(), expected);
 }
 
 /// Return `plain` with each relocated word of `fixture` set to its value plus `bias`.
