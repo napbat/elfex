@@ -1,6 +1,8 @@
 //! Lay out the sections and segments of an [`ElfBuilder`] and serialize the file.
 
-use super::{BuilderSection, DEFAULT_EXEC_BASE, ElfBuilder, EntryPoint};
+use super::{
+    BuilderLayout, BuilderSection, DEFAULT_EXEC_BASE, ElfBuilder, EntryPoint, SectionPlacement,
+};
 use crate::endian::Encoding;
 use crate::header::{FileHeader, FileType};
 use crate::prelude::*;
@@ -46,14 +48,32 @@ struct HeaderSizes {
     end: u64,
 }
 
-/// Lay out and serialize the file of `builder`.
-pub(super) fn write(builder: &ElfBuilder) -> Result<Vec<u8>> {
-    check_input(builder)?;
-    let interp = builder.interpreters.first().map(|path| {
+/// The planned file of a builder: the headers and the layout, without the file bytes.
+struct Plan<'a> {
+    /// The sections and the `PT_LOAD` segments.
+    layout: Layout<'a>,
+    /// The file header.
+    header: FileHeader,
+    /// The program headers.
+    program_headers: Vec<ProgramHeader>,
+    /// The section headers, from the null section to `.shstrtab`.
+    section_headers: Vec<SectionHeader>,
+    /// The content of `.shstrtab`.
+    shstrtab: Vec<u8>,
+}
+
+/// Return the `.interp` section of `builder`, if it has an interpreter.
+fn interp_section(builder: &ElfBuilder) -> Option<BuilderSection> {
+    builder.interpreters.first().map(|path| {
         let mut data = path.as_bytes().to_vec();
         data.push(0);
         BuilderSection::progbits(INTERP_NAME, SHF_ALLOC, data)
-    });
+    })
+}
+
+/// Lay out the file of `builder` and make all headers. `interp` is the `.interp` section.
+fn plan<'a>(builder: &'a ElfBuilder, interp: Option<&'a BuilderSection>) -> Result<Plan<'a>> {
+    check_input(builder)?;
     let encoding = builder.encoding;
     let sizes = header_sizes(builder, interp.is_some())?;
     let base = builder
@@ -63,7 +83,7 @@ pub(super) fn write(builder: &ElfBuilder) -> Result<Vec<u8>> {
         } else {
             0
         });
-    let layout = layout_sections(builder, interp.as_ref(), sizes.end, base)?;
+    let layout = layout_sections(builder, interp, sizes.end, base)?;
     let program_headers = program_headers(builder, &layout, &sizes, base)?;
     check_class_range(encoding, &program_headers)?;
 
@@ -80,23 +100,66 @@ pub(super) fn write(builder: &ElfBuilder) -> Result<Vec<u8>> {
     header.phnum = sizes.phnum;
     header.shoff = shoff;
     set_section_counts(&mut header, &mut section_headers, shstrndx)?;
+    Ok(Plan {
+        layout,
+        header,
+        program_headers,
+        section_headers,
+        shstrtab,
+    })
+}
 
+/// Lay out the file of `builder` and return the placement of each section.
+pub(super) fn preview(builder: &ElfBuilder) -> Result<BuilderLayout> {
+    let interp = interp_section(builder);
+    let plan = plan(builder, interp.as_ref())?;
+    let names = plan
+        .layout
+        .sections
+        .iter()
+        .map(|placed| placed.section.name.as_str())
+        .chain([SHSTRTAB_NAME]);
+    // Section 0 is the null section. The other headers follow the order of `names`.
+    let sections = names
+        .zip(plan.section_headers.iter().enumerate().skip(1))
+        .map(|(name, (index, header))| {
+            let placement = SectionPlacement {
+                index,
+                addr: header.addr,
+                offset: header.offset,
+                size: header.size,
+            };
+            (String::from(name), placement)
+        })
+        .collect();
+    let entry = match builder.entry {
+        EntryPoint::None => None,
+        EntryPoint::Address(_) | EntryPoint::Section { .. } => Some(plan.header.entry),
+    };
+    Ok(BuilderLayout { sections, entry })
+}
+
+/// Lay out and serialize the file of `builder`.
+pub(super) fn write(builder: &ElfBuilder) -> Result<Vec<u8>> {
+    let interp = interp_section(builder);
+    let plan = plan(builder, interp.as_ref())?;
+    let encoding = builder.encoding;
     let mut out = Vec::new();
-    header.write(&mut out)?;
-    for segment in &program_headers {
+    plan.header.write(&mut out)?;
+    for segment in &plan.program_headers {
         segment.write(&mut out, encoding)?;
     }
-    for placed in &layout.sections {
+    for placed in &plan.layout.sections {
         if placed.header.has_file_data() {
             put(&mut out, placed.header.offset, &placed.section.data)?;
         }
     }
-    put(&mut out, layout.file_end, &shstrtab)?;
+    put(&mut out, plan.layout.file_end, &plan.shstrtab)?;
     let mut table = Vec::new();
-    for section in &section_headers {
+    for section in &plan.section_headers {
         section.write(&mut table, encoding)?;
     }
-    put(&mut out, shoff, &table)?;
+    put(&mut out, plan.header.shoff, &table)?;
     Ok(out)
 }
 

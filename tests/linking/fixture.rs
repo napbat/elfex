@@ -1,8 +1,8 @@
 //! Build a small shared object with all dynamic linking tables.
 //!
 //! The table data depends on the section addresses, but the layout depends only on the section
-//! sizes and flags. Thus [`build`] builds the file one time with placeholder addresses, reads
-//! the section addresses, and builds the file again with the final data.
+//! sizes and flags. Thus [`build`] plans the layout with placeholder addresses
+//! (`ElfBuilder::try_layout`), and builds the file with the final data.
 
 use std::collections::BTreeMap;
 
@@ -67,7 +67,7 @@ pub const ELF32: Spec = Spec {
     runtime_base: 0x4000_0000,
 };
 
-/// The section addresses and indices of the first build.
+/// The section addresses and indices of the planned layout.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
     addresses: BTreeMap<String, u64>,
@@ -76,12 +76,12 @@ pub struct Layout {
 
 impl Layout {
     /// Return the virtual address of the section `name`, or a placeholder address before the
-    /// first build.
+    /// layout is known.
     pub fn address(&self, name: &str) -> u64 {
         self.addresses.get(name).copied().unwrap_or(0x1000)
     }
 
-    /// Return the section index of `name`, or 1 before the first build.
+    /// Return the section index of `name`, or 1 before the layout is known.
     fn index(&self, name: &str) -> u16 {
         self.indices.get(name).copied().unwrap_or(1)
     }
@@ -122,25 +122,21 @@ pub struct Tables {
 
 /// Build the fixture for `spec`.
 pub fn build(spec: Spec) -> Fixture {
-    let first = builder(spec, &Layout::default()).0.build();
+    let planned = builder(spec, &Layout::default()).0.try_layout().unwrap();
     let layout = Layout {
-        addresses: first
+        addresses: planned
             .sections()
-            .map(|section| (section.name.to_string(), section.header.addr))
+            .map(|(name, section)| (name.to_string(), section.addr))
             .collect(),
-        indices: first
+        indices: planned
             .sections()
-            .map(|section| {
-                (
-                    section.name.to_string(),
-                    u16::try_from(section.index).unwrap(),
-                )
-            })
+            .map(|(name, section)| (name.to_string(), u16::try_from(section.index).unwrap()))
             .collect(),
     };
     let (builder, tables) = builder(spec, &layout);
     let elf = builder.build();
-    for section in elf.sections() {
+    // The layout has no null section.
+    for section in elf.sections().skip(1) {
         assert_eq!(
             layout.addresses.get(section.name),
             Some(&section.header.addr),

@@ -261,7 +261,13 @@ fn uses_extended_numbering_for_many_sections() {
 
 #[test]
 fn rejects_invalid_input() {
-    let kind = |builder: ElfBuilder| builder.try_build().unwrap_err().kind;
+    let kind = |builder: ElfBuilder| {
+        let error = builder.try_build().unwrap_err();
+        // The layout preview fails in the same way.
+        let preview = builder.try_layout().unwrap_err();
+        assert_eq!(preview.to_string(), error.to_string());
+        error.kind
+    };
     let unknown_link = ElfBuilder::new(Encoding::ELF64_LE).add_section(BuilderSection {
         link_name: Some(".missing".into()),
         ..BuilderSection::progbits(".a", 0, Vec::new())
@@ -309,6 +315,68 @@ fn rejects_invalid_input() {
             0x10_0000,
         ));
     assert!(matches!(kind(elf32_end), ErrorKind::ValueOutOfRange(_)));
+}
+
+#[test]
+fn plans_the_layout_of_the_build() {
+    let elf32 = ElfBuilder::new(Encoding::ELF32_BE)
+        .file_type(FileType::DYN)
+        .add_section(BuilderSection::progbits(
+            ".text",
+            SHF_ALLOC | SHF_EXECINSTR,
+            vec![0; 5],
+        ))
+        .add_section(BuilderSection::progbits(".comment", 0, vec![1; 3]));
+    for builder in [exec_builder(), elf32] {
+        let layout = builder.try_layout().unwrap();
+        let elf = builder.try_build().unwrap();
+        let names: Vec<&str> = layout.sections().map(|(name, _)| name).collect();
+        assert_eq!(names, elf.section_names()[1..]);
+        for section in elf.sections().skip(1) {
+            let placement = layout.section(section.name).unwrap();
+            assert_eq!(placement.index, section.index, "{}", section.name);
+            assert_eq!(
+                (placement.addr, placement.offset, placement.size),
+                (
+                    section.header.addr,
+                    section.header.offset,
+                    section.header.size
+                ),
+                "{}",
+                section.name
+            );
+        }
+        let entry = (elf.entry_point() != 0).then_some(elf.entry_point());
+        assert_eq!(layout.entry_point(), entry);
+        assert_eq!(layout.section(".missing"), None);
+    }
+
+    // Other data of the same size gives the same layout.
+    let mut other = exec_builder();
+    for section in &mut other.sections {
+        section.data.fill(0xaa);
+    }
+    assert_eq!(
+        other.try_layout().unwrap(),
+        exec_builder().try_layout().unwrap()
+    );
+    let text = exec_builder()
+        .try_layout()
+        .unwrap()
+        .section(".text")
+        .unwrap();
+    assert_eq!(
+        exec_builder()
+            .entry(0x1234)
+            .try_layout()
+            .unwrap()
+            .entry_point(),
+        Some(0x1234)
+    );
+    assert_eq!(
+        exec_builder().try_layout().unwrap().entry_point(),
+        Some(text.addr + 4)
+    );
 }
 
 #[test]

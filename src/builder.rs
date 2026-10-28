@@ -18,6 +18,9 @@
 //! address of each segment agree modulo the page size. The sections in a segment keep the
 //! order in which you added them.
 //!
+//! [`ElfBuilder::try_layout`] gives the address and the file offset of each section before
+//! the build, as a [`BuilderLayout`]. Use it to make section data that holds addresses.
+//!
 //! # Example
 //!
 //! ```
@@ -145,6 +148,61 @@ impl BuilderSection {
         } else {
             u64::try_from(self.data.len()).unwrap_or(u64::MAX)
         }
+    }
+}
+
+/// The place of one section in the file that [`ElfBuilder::try_layout`] plans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct SectionPlacement {
+    /// The index of the section in the section header table.
+    pub index: usize,
+    /// The virtual address of the section (`sh_addr`), or 0 for a section without
+    /// `SHF_ALLOC`.
+    pub addr: u64,
+    /// The file offset of the section (`sh_offset`).
+    pub offset: u64,
+    /// The size of the section (`sh_size`).
+    pub size: u64,
+}
+
+/// The layout of a file that [`ElfBuilder::try_layout`] plans: the place of each section and
+/// the entry point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuilderLayout {
+    /// The name and the place of each section, in section header order, without the null
+    /// section.
+    sections: Vec<(String, SectionPlacement)>,
+    /// The entry point, if the builder has one.
+    entry: Option<u64>,
+}
+
+impl BuilderLayout {
+    /// Return the place of the first section with the name `name`.
+    ///
+    /// The layout also has the `.interp` section of an interpreter and the `.shstrtab`
+    /// section that the builder adds.
+    #[must_use]
+    pub fn section(&self, name: &str) -> Option<SectionPlacement> {
+        self.sections
+            .iter()
+            .find(|(section, _)| section == name)
+            .map(|(_, placement)| *placement)
+    }
+
+    /// Return the name and the place of each section, in section header order, without the
+    /// null section.
+    pub fn sections(&self) -> impl Iterator<Item = (&str, SectionPlacement)> {
+        self.sections
+            .iter()
+            .map(|(name, placement)| (name.as_str(), *placement))
+    }
+
+    /// Return the virtual address of the entry point (`e_entry`), or `None` if the builder
+    /// has no entry point.
+    #[must_use]
+    pub const fn entry_point(&self) -> Option<u64> {
+        self.entry
     }
 }
 
@@ -338,6 +396,45 @@ impl ElfBuilder {
     ) -> Self {
         self.segments.push((segment_type, section_name.into()));
         self
+    }
+
+    /// Lay out the file, and return the place of each section and the entry point. The
+    /// method does not write the file.
+    ///
+    /// The layout depends on the builder settings and on the type, flags, size, alignment
+    /// and order of the sections. It does not depend on the section data bytes. Thus, to get
+    /// the final addresses, add placeholder data of the final size. Then use the addresses to
+    /// make the final data (for example the `DT_*` values of `.dynamic` or the relocation
+    /// addresses), put it into the sections, and call [`Self::try_build`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use elfex::section::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE};
+    /// use elfex::{BuilderSection, ElfBuilder, Encoding};
+    ///
+    /// let text = |data| BuilderSection::progbits(".text", SHF_ALLOC | SHF_EXECINSTR, data);
+    /// let builder = ElfBuilder::new(Encoding::ELF64_LE)
+    ///     .add_section(BuilderSection::progbits(".data", SHF_ALLOC | SHF_WRITE, vec![0; 8]))
+    ///     .entry_in_section(".text", 0);
+    ///
+    /// // Plan with placeholder code of the final size.
+    /// let layout = builder.clone().add_section(text(vec![0; 8])).try_layout()?;
+    /// let data = layout.section(".data").expect("the layout has .data").addr;
+    /// // The code holds the address of `.data`.
+    /// let file = builder.add_section(text(data.to_le_bytes().to_vec())).try_build()?;
+    ///
+    /// let section = file.section_by_name(".data").expect("the file has .data");
+    /// assert_eq!(section.header.addr, data);
+    /// assert_eq!(Some(file.entry_point()), layout.entry_point());
+    /// # Ok::<(), elfex::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::try_build`].
+    pub fn try_layout(&self) -> Result<BuilderLayout> {
+        layout::preview(self)
     }
 
     /// Build the file.

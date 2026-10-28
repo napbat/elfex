@@ -1,13 +1,14 @@
 //! Check at compile time that the public types implement `Send` and `Sync`.
 
 use elfex::{
-    AuxvEntry, BuiltSymbolTable, Cie, DynamicEntry, DynamicInfo, DynamicRelocations, DynamicTable,
-    EhFrameHdr, ElfFile, ElfHeaders, ElfImage, Error, ErrorContext, Fde, FileMapping, GnuAbiTag,
-    GnuHashTable, GnuProperty, NamedSymbol, Note, NoteTable, RelocationSection, RelocationTable,
-    RelrTable, SectionGroup, SectionRef, Segment, StringTable, StringTableBuilder,
-    SymbolSectionIndexTable, SymbolTable, SymbolTableBuilder, SymbolVersion, SysvHashTable,
-    ValidationIssue, ValidationResult, VersionDefinitionTable, VersionMap, VersionName,
-    VersionRequirementTable, VersionTables, VersymTable,
+    AuxvEntry, BuilderLayout, BuiltSymbolTable, Cie, DynamicEntry, DynamicInfo, DynamicRelocations,
+    DynamicTable, EhFrameHdr, ElfFile, ElfHeaders, ElfImage, Error, ErrorContext, Fde, FileMapping,
+    GnuAbiTag, GnuHashTable, GnuProperty, GroupTable, NamedSymbol, Note, NoteTable,
+    RelocationSection, RelocationTable, RelrTable, SectionGroup, SectionPlacement, SectionRef,
+    Segment, StringTable, StringTableBuilder, SymbolSectionIndexTable, SymbolTable,
+    SymbolTableBuilder, SymbolVersion, SysvHashTable, ValidationIssue, ValidationResult,
+    VersionDefinitionTable, VersionMap, VersionName, VersionRequirementTable, VersionTables,
+    VersymTable,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -23,6 +24,8 @@ fn public_types_are_send_and_sync() {
     assert_send_sync::<ErrorContext>();
     assert_send_sync::<ValidationIssue>();
     assert_send_sync::<ValidationResult>();
+    assert_send_sync::<BuilderLayout>();
+    assert_send_sync::<SectionPlacement>();
 
     assert_send_sync::<DynamicEntry>();
     assert_send_sync::<DynamicTable>();
@@ -39,6 +42,7 @@ fn public_types_are_send_and_sync() {
     assert_send_sync::<RelrTable>();
     assert_send_sync::<RelocationSection>();
     assert_send_sync::<SectionGroup>();
+    assert_send_sync::<GroupTable>();
     assert_send_sync::<Note>();
     assert_send_sync::<NoteTable>();
     assert_send_sync::<FileMapping>();

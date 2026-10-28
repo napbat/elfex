@@ -191,7 +191,7 @@ pub mod tables;
 pub mod validation;
 pub mod version;
 
-pub use builder::{BuilderSection, ElfBuilder};
+pub use builder::{BuilderLayout, BuilderSection, ElfBuilder, SectionPlacement};
 pub use dynamic::{DynamicEntry, DynamicInfo, DynamicTable, DynamicTag};
 pub use eh_frame::{Cie, EhFrame, EhFrameEntry, EhFrameHdr, EhFrameHdrEntry, Fde, PointerBases};
 pub use elf::{ElfHeaders, MissingSegmentData, ParseOptions, SourceLayout};
