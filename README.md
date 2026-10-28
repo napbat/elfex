@@ -18,6 +18,7 @@ address to a different source offset.
   of large header tables (`PN_XNUM`, `SHN_XINDEX`).
 - The dynamic table, the dynamic and static symbol tables, string tables, notes, SysV and
   GNU hash tables, and GNU symbol versions.
+- Section groups (`SHT_GROUP`, COMDAT), and the `NT_FILE` and `NT_AUXV` notes of core files.
 - `REL`, `RELA` and `RELR` relocations, with relocation types for many architectures.
 - `.eh_frame` and `.eh_frame_hdr` records: CIEs, FDEs and the binary search table.
 - Lossless round trips of raw files through `ElfFile`. When nothing changes,
@@ -265,17 +266,30 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `dynamic()`, `dynamic_strings()` | The dynamic table and its string table |
 | `needed_libraries()`, `soname()`, `rpath()`, `runpath()` | The `DT_NEEDED`, `DT_SONAME`, `DT_RPATH` and `DT_RUNPATH` strings |
 | `interpreter()` | The `PT_INTERP` path |
-| `dynamic_symbols()`, `dynamic_symbol_list()` | The dynamic symbol table, and the symbols with names and versions |
+| `dynamic_symbols()`, `dynamic_symbol_list()` | The dynamic symbol table, and the symbols with names, sections and versions (`NamedSymbol`) |
 | `exports()`, `imports()`, `lookup_dynamic_symbol(name)` | The defined and the undefined dynamic symbols, and a hash table lookup |
 | `version_tables()` | The `versym`, `verdef` and `verneed` tables |
 | `sysv_hash_table()`, `gnu_hash_table()` | The `DT_HASH` and `DT_GNU_HASH` tables |
 | `dynamic_relocations()` | The `RELA`, `REL`, PLT and `RELR` relocation tables |
 | `notes()`, `build_id()` | The notes, and the `NT_GNU_BUILD_ID` descriptor |
+| `core_file_mappings()`, `auxv()` | The `NT_FILE` mapped files and the `NT_AUXV` auxiliary vector of a core file |
 | `init_array()`, `fini_array()`, `preinit_array()` | The initialization and termination functions |
 | `eh_frame_hdr()` | The `PT_GNU_EH_FRAME` table |
 
-`ElfFile` also has `symbols()`, `symbol_strings()` and `section_relocations(index)` for the
-static symbol table and the relocation sections.
+`ElfFile` also has accessors for the sections:
+
+| Accessor | Result |
+| --- | --- |
+| `symbols()`, `symbol_strings()` | The static symbol table (`SHT_SYMTAB`) and its string table |
+| `symbol_list()` | The static symbols with names and sections (`NamedSymbol`). `SHT_SYMTAB_SHNDX` gives the extended section indices |
+| `lookup_symbol(name)` | A static symbol, or else a dynamic symbol, with the name |
+| `section_relocations(index)`, `relocation_sections()` | One `SHT_REL` or `SHT_RELA` section, or all of them with their target sections (`RelocationSection`) |
+| `section_groups()` | The `SHT_GROUP` sections with their flags, signatures and members (`SectionGroup`) |
+| `section_data_by_name(name)` | The bytes of the first section with the name |
+| `to_image()` | The `ElfImage` of the file as it is now, with all edits |
+
+`Relocation::type_name(machine)` gives the spec name of a relocation type, for example
+`R_X86_64_RELATIVE`.
 
 ```rust,no_run
 use elfex::ElfFile;
@@ -298,6 +312,15 @@ if let Some(build_id) = file.build_id()? {
 let relocations = file.dynamic_relocations()?;
 if let Some(rela) = &relocations.rela {
     println!("{} RELA relocations", rela.relocations.len());
+}
+for section in file.relocation_sections()? {
+    for relocation in &section.table {
+        let kind = relocation.type_name(file.machine()).unwrap_or("unknown");
+        println!("{}: {kind} at {:#x}", section.name, relocation.offset);
+    }
+}
+for group in file.section_groups()? {
+    println!("group {:?} with {} members", group.signature, group.members.len());
 }
 # Ok::<(), elfex::Error>(())
 ```
@@ -376,7 +399,7 @@ The facade modules contain the usual entry points:
 | --- | --- |
 | `image` | `ElfFile`, `ElfImage`, `ElfHeaders`, parsing options, validation, and `ElfBuilder` |
 | `headers` | The file header, the program and section headers, and their enums |
-| `tables` | Dynamic, symbol, string, relocation, note, hash, version and unwind tables |
+| `tables` | Dynamic, symbol, string, relocation, note, hash, version, group and unwind tables |
 | `io` | `nostdio` traits/types plus positional `ReadAt` readers |
 
 Specialized modules, for example `dynamic`, `symbol`, `reloc`, `note`, `linking` and
