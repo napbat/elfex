@@ -5,6 +5,24 @@
 //! is the empty string in a well-formed table.
 //!
 //! Use [`StringTable`] to read strings, and [`StringTableBuilder`] to make a new table.
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::strtab::{StringTable, StringTableBuilder};
+//!
+//! let mut builder = StringTableBuilder::new();
+//! let foobar = builder.add("foobar")?;
+//! // "bar" uses the tail of "foobar".
+//! let bar = builder.add("bar")?;
+//! assert_eq!(bar, foobar + 3);
+//!
+//! let table = StringTable::parse(&builder.into_bytes());
+//! assert_eq!(table.get(foobar)?, "foobar");
+//! assert_eq!(table.get(bar)?, "bar");
+//! assert_eq!(table.get(0)?, "");
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 use crate::prelude::*;
 use crate::{Error, Result};
