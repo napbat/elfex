@@ -1,4 +1,8 @@
 //! The ELF file header (`Elf32_Ehdr` and `Elf64_Ehdr`).
+//!
+//! [`FileHeader`] parses and writes the file header. [`FileType`] gives the object file type
+//! (`e_type`) and [`Machine`] gives the target architecture (`e_machine`). The header starts
+//! with the identification bytes ([`Ident`]).
 
 use crate::endian::{ByteReader, Class, Encoding};
 use crate::ident::{EI_NIDENT, Ident};
