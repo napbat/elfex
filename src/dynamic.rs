@@ -1,4 +1,41 @@
 //! The dynamic table (`.dynamic`, `PT_DYNAMIC`): `Elf32_Dyn` and `Elf64_Dyn` entries.
+//!
+//! The dynamic table gives the dynamic linker the needed libraries, the virtual addresses of
+//! the other dynamic tables, and flags.
+//!
+//! - [`DynamicEntry`] is one entry: a tag ([`DynamicTag`]) and a value.
+//! - [`DynamicTable`] parses and writes all entries of a table.
+//! - [`DynamicInfo`] holds the common values of a table. [`DynamicTable::info`] gives it.
+//! - The `DF_*` and `DF_1_*` constants are the bits of `DT_FLAGS` and `DT_FLAGS_1`.
+//!
+//! A string value (for example `DT_NEEDED`) is an offset in the dynamic string table
+//! (`DT_STRTAB`). Give the [`StringTable`] to [`DynamicTable::needed`] to get the names.
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::dynamic::{DynamicEntry, DynamicTable, DynamicTag};
+//! use elfex::strtab::{StringTable, StringTableBuilder};
+//! use elfex::Encoding;
+//!
+//! let mut strings = StringTableBuilder::new();
+//! let libc = strings.add("libc.so.6")?;
+//! let soname = strings.add("libdemo.so")?;
+//!
+//! let mut table = DynamicTable::new();
+//! table.push(DynamicEntry::new(DynamicTag::NEEDED, u64::from(libc)));
+//! table.set(DynamicTag::SONAME, u64::from(soname));
+//! let bytes = table.write(Encoding::ELF64_LE)?;
+//! // The writer adds the terminating DT_NULL entry.
+//! assert_eq!(bytes.len(), 3 * 16);
+//!
+//! let parsed = DynamicTable::parse(&bytes, Encoding::ELF64_LE)?;
+//! assert_eq!(parsed, table);
+//! let strings = StringTable::parse(strings.as_bytes());
+//! assert_eq!(parsed.needed(&strings)?, ["libc.so.6"]);
+//! assert_eq!(parsed.soname(&strings)?, Some("libdemo.so"));
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 mod tags;
 #[cfg(test)]
