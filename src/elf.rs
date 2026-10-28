@@ -1,4 +1,9 @@
-//! Shared types of the image APIs, and [`ElfHeaders`].
+//! The shared types of the image APIs, and [`ElfHeaders`].
+//!
+//! - [`ElfHeaders`] holds the file header, the program headers and the section headers.
+//! - [`SourceLayout`] tells if the bytes are a raw file or a loader-mapped image.
+//! - [`ParseOptions`] and [`MissingSegmentData`] control how
+//!   [`ElfImage`](crate::ElfImage) reads a source.
 //!
 //! # Address spaces
 //!
@@ -107,6 +112,30 @@ pub const MAX_UNSIZED_TABLE_ENTRIES: u64 = 1 << 20;
 /// The ELF headers without the segment and section data.
 ///
 /// Use this type for a remote process, or when you need only the header data.
+///
+/// # Examples
+///
+/// ```
+/// use elfex::section::{SHF_ALLOC, SHF_EXECINSTR};
+/// use elfex::{BuilderSection, ElfBuilder, ElfHeaders, Encoding, FileType, SectionType};
+///
+/// let raw = ElfBuilder::new(Encoding::ELF32_BE)
+///     .add_section(BuilderSection::progbits(".text", SHF_ALLOC | SHF_EXECINSTR, vec![0; 4]))
+///     .entry_in_section(".text", 0)
+///     .try_build()?
+///     .try_build()?;
+///
+/// let headers = ElfHeaders::from_slice(&raw)?;
+/// assert!(!headers.is_64bit());
+/// assert_eq!(headers.file_type(), FileType::EXEC);
+/// let (index, text) = headers.section_by_name(".text").expect("the file has .text");
+/// assert_eq!(text.section_type, SectionType::PROGBITS);
+/// assert_eq!(headers.section_names[index], ".text");
+///
+/// // The entry point is the start of .text. Translate it to a file offset.
+/// assert_eq!(headers.vaddr_to_file_offset(headers.entry_point()), Some(text.offset));
+/// # Ok::<(), elfex::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElfHeaders {
     /// The ELF file header (`Elf32_Ehdr` or `Elf64_Ehdr`).
