@@ -313,7 +313,7 @@ elf_value_type! {
 /// `Elf64_Chdr`).
 ///
 /// Elfex does not decompress data. Give the bytes after the header to a decompressor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct CompressionHeader {
     /// The compression algorithm (`ch_type`).
     pub compression_type: CompressionType,

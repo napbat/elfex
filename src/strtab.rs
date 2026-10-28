@@ -169,7 +169,7 @@ impl<'a> StringTableIter<'a> {
 ///
 /// The builder does not move an old string to the tail of a longer string that you add
 /// later.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StringTableBuilder {
     data: Vec<u8>,
     /// Each added string in reverse byte order, with the offset of its NUL terminator.

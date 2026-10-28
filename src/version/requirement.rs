@@ -17,7 +17,7 @@ const VERNAUX_NEXT: u32 = 16;
 /// One version that a file needs: an `Elf32_Vernaux` or `Elf64_Vernaux` entry.
 ///
 /// The layout is the same in ELF32 and ELF64.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct VersionNeedEntry {
     /// The System V ELF hash of the version name (`vna_hash`).
     pub hash: u32,

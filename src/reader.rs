@@ -175,7 +175,7 @@ impl<R> core::fmt::Debug for SeekReader<R> {
 }
 
 /// Positional reader for a byte slice in memory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SliceReader<'a> {
     data: &'a [u8],
 }
@@ -214,7 +214,7 @@ impl ReadAt for SliceReader<'_> {
 }
 
 /// Positional reader for an owned byte vector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct VecReader {
     data: Vec<u8>,
 }
@@ -277,7 +277,7 @@ impl SeekReader<File> {
 ///
 /// Use this reader to parse a module that is already loaded, for example a shared object that
 /// `dl_iterate_phdr` reports.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BaseAddressReader {
     base: *const u8,
     size: Option<usize>,

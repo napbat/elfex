@@ -97,7 +97,7 @@ impl fmt::Display for ValidationCode {
 }
 
 /// A single validation issue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ValidationIssue {
     /// Severity of the issue.
     pub level: ValidationLevel,
@@ -161,7 +161,7 @@ impl fmt::Display for ValidationIssue {
 }
 
 /// Collection of validation issues.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ValidationResult {
     /// All validation issues found.
     pub issues: Vec<ValidationIssue>,

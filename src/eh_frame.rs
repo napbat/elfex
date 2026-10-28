@@ -84,7 +84,7 @@ pub enum EhFrameEntry {
 }
 
 /// The parser of the `.eh_frame` section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EhFrame;
 
 /// The length and identifier fields of one `.eh_frame` record.

@@ -133,7 +133,8 @@ impl VersymTable {
 }
 
 /// A version name that a version index refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct VersionName {
     /// The offset of the version name in the dynamic string table (`vda_name` or `vna_name`).
     pub name: u32,
@@ -145,7 +146,8 @@ pub struct VersionName {
 }
 
 /// The version of one dynamic symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct SymbolVersion {
     /// The version index (the `Elf_Versym` value without [`VERSYM_HIDDEN`]).
     pub index: u16,

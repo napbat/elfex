@@ -75,6 +75,7 @@ impl NewSymbol {
 
 /// The output of [`SymbolTableBuilder::try_build`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BuiltSymbolTable {
     /// The serialized symbol table. Entry 0 is the null symbol.
     pub symbols: Vec<u8>,
@@ -91,7 +92,7 @@ pub struct BuiltSymbolTable {
 /// The output starts with the null symbol. The local symbols follow in the order of the
 /// `add` calls, then all other symbols in the order of the `add` calls. Symbols with the same
 /// name use the same string.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolTableBuilder {
     encoding: Encoding,
     symbols: Vec<NewSymbol>,

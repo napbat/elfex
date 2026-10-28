@@ -374,7 +374,8 @@ fn string_at(strings: &StringTable, offset: u64) -> Result<&str> {
 ///
 /// Each `Option` field is the value of the first entry with the tag, or `None` if the tag is
 /// absent. Address fields are virtual addresses; size fields are in bytes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct DynamicInfo {
     /// `DT_STRTAB`: virtual address of the dynamic string table.
     pub strtab: Option<u64>,

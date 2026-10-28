@@ -27,7 +27,7 @@ use core::fmt;
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// Information about the location of an error.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ErrorContext {
     /// Source offset where the error occurred (if known).
     pub file_offset: Option<u64>,

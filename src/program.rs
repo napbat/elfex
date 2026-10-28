@@ -89,7 +89,7 @@ pub const ELF64_PROGRAM_HEADER_SIZE: usize = 56;
 /// The fields keep the names of the specification without the `p_` prefix. ELF32 and ELF64
 /// store the fields in a different order. [`Self::parse`] and [`Self::write`] use the order of
 /// the class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ProgramHeader {
     /// The segment type (`p_type`).
     pub segment_type: SegmentType,
