@@ -773,10 +773,41 @@ mod tests {
     #[test]
     fn valid_headers_have_no_issues() {
         assert!(check(&sample()).is_ok(), "{:?}", check(&sample()));
-        assert!(
-            check(&sample_with_sections()).is_ok(),
-            "{:?}",
-            check(&sample_with_sections())
+        let result = check(&sample_with_sections());
+        assert!(result.is_ok(), "{result:?}");
+        // Without a file size, the file range checks do not occur.
+        let mut headers = sample_with_sections();
+        headers.header.shoff = FILE_SIZE;
+        headers.section_headers[2].offset = FILE_SIZE;
+        let mut result = ValidationResult::new();
+        validate_headers(&headers, None, &mut result);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// Return the context of the first issue with `code`.
+    fn context_of(result: &ValidationResult, code: ValidationCode) -> Option<&str> {
+        result
+            .iter()
+            .find(|issue| issue.code == code)
+            .and_then(|issue| issue.context.as_deref())
+    }
+
+    #[test]
+    fn detects_header_tables_out_of_file() {
+        let mut headers = sample();
+        headers.header.phoff = FILE_SIZE - 0x10;
+        let result = check(&headers);
+        assert_eq!(
+            context_of(&result, ValidationCode::SegmentOutOfFile),
+            Some("e_phoff")
+        );
+
+        let mut headers = sample_with_sections();
+        headers.header.shoff = u64::MAX - 0x10;
+        let result = check(&headers);
+        assert_eq!(
+            context_of(&result, ValidationCode::SectionOutOfFile),
+            Some("e_shoff")
         );
     }
 
@@ -896,8 +927,17 @@ mod tests {
         assert!(check(&headers).contains(ValidationCode::InvalidSectionLink));
 
         let mut headers = sample_with_sections();
+        headers.section_headers[1].flags |= SHF_INFO_LINK;
+        headers.section_headers[1].info = 3;
+        assert!(check(&headers).contains(ValidationCode::InvalidSectionLink));
+        headers.section_headers[1].info = 2;
+        assert!(check(&headers).is_ok());
+
+        let mut headers = sample_with_sections();
         headers.header.shstrndx = 1;
         assert!(check(&headers).contains(ValidationCode::InvalidStringTableIndex));
+        headers.header.shstrndx = SHN_UNDEF;
+        assert!(check(&headers).is_ok());
 
         let mut headers = sample_with_sections();
         headers.section_headers[1].addralign = 3;

@@ -424,9 +424,8 @@ fn read_program_headers<R: ReadAt>(
             header.phentsize
         )));
     }
-    let table_size = phnum
-        .checked_mul(u64::from(header.phentsize))
-        .ok_or_else(|| Error::invalid_segment("the program header table size overflows"))?;
+    // `phnum` is at most `u32::MAX` and `e_phentsize` is a `u16`: the product fits in 64 bits.
+    let table_size = phnum.saturating_mul(u64::from(header.phentsize));
     let bytes =
         read_table(reader, base_offset, header.phoff, phnum, table_size).ok_or_else(|| {
             Error::invalid_segment("the program header table is outside the source")
@@ -582,6 +581,21 @@ mod tests {
         let headers = ElfHeaders::from_slice(&bytes).unwrap();
         assert_eq!(headers.section_headers, []);
         assert_eq!(headers.header.shnum, 3);
+        let reader = CountingReader::sized(bytes);
+        let read = ElfHeaders::read_from(&reader, 0, SourceLayout::File).unwrap();
+        assert_eq!(read, headers);
+    }
+
+    #[test]
+    fn program_header_table_must_be_in_source() {
+        let mut bytes = sample(Encoding::ELF64_LE);
+        let past_end = u64::try_from(bytes.len()).unwrap();
+        Encoding::ELF64_LE
+            .put_u64(&mut bytes, 32, past_end)
+            .unwrap();
+        let error = ElfHeaders::from_slice(&bytes).unwrap_err();
+        assert!(matches!(error.kind(), crate::ErrorKind::InvalidSegment(_)));
+        assert_eq!(error.context().unwrap().file_offset, Some(past_end));
     }
 
     #[test]
@@ -612,32 +626,100 @@ mod tests {
     fn rejects_short_program_header_entries() {
         let mut bytes = sample(Encoding::ELF64_LE);
         Encoding::ELF64_LE.put_u16(&mut bytes, 54, 8).unwrap();
-        assert!(ElfHeaders::from_slice(&bytes).is_err());
+        assert!(matches!(
+            ElfHeaders::from_slice(&bytes).unwrap_err().kind(),
+            crate::ErrorKind::InvalidHeader(_)
+        ));
     }
 
-    /// A source with an unknown size that records the largest read request.
-    struct UnsizedReader {
+    #[test]
+    fn short_section_header_entries_give_no_sections() {
+        let mut bytes = sample(Encoding::ELF64_LE);
+        Encoding::ELF64_LE.put_u16(&mut bytes, 58, 32).unwrap();
+        let headers = ElfHeaders::from_slice(&bytes).unwrap();
+        assert_eq!(headers.section_headers, []);
+        assert_eq!(headers.section_names, Vec::<String>::new());
+        assert_eq!(headers.header.shnum, 3);
+    }
+
+    #[test]
+    fn missing_program_header_table_gives_no_segments() {
+        let encoding = Encoding::ELF64_LE;
+        let mut no_phoff = sample(encoding);
+        encoding.put_u64(&mut no_phoff, 32, 0).unwrap();
+        let mut no_phnum = sample(encoding);
+        encoding.put_u16(&mut no_phnum, 56, 0).unwrap();
+        for bytes in [no_phoff, no_phnum] {
+            let headers = ElfHeaders::from_slice(&bytes).unwrap();
+            assert_eq!(headers.program_headers, []);
+            assert_eq!(headers.image_origin(), None);
+            assert_eq!(headers.section_headers.len(), 3);
+        }
+    }
+
+    #[test]
+    fn translates_to_source_offsets() {
+        let mut headers = ElfHeaders::from_slice(&sample(Encoding::ELF64_LE)).unwrap();
+        let end = headers.program_headers[0].vaddr + headers.program_headers[0].memsz;
+        assert_eq!(headers.image_end(), Some(end));
+        assert_eq!(headers.mapped_size(), Some(end - 0x1000));
+        assert_eq!(
+            headers.vaddr_to_source_offset(0x1010, SourceLayout::File),
+            Some(0x10)
+        );
+        assert_eq!(
+            headers.vaddr_to_source_offset(0x1000, SourceLayout::Mapped),
+            Some(0)
+        );
+        assert_eq!(
+            headers.vaddr_to_source_offset(0x800, SourceLayout::Mapped),
+            None
+        );
+        assert_eq!(
+            headers.vaddr_to_source_offset(end, SourceLayout::Mapped),
+            None
+        );
+
+        // A memory range that ends past 2^64 has no end.
+        headers.program_headers[0].memsz = u64::MAX;
+        assert_eq!(headers.image_end(), None);
+        assert_eq!(headers.mapped_size(), None);
+    }
+
+    /// A source that records the largest read request.
+    struct CountingReader {
         data: Vec<u8>,
+        sized: bool,
         largest: Cell<usize>,
     }
 
-    impl UnsizedReader {
+    impl CountingReader {
+        /// Return a source with an unknown size.
         fn new(data: Vec<u8>) -> Self {
             Self {
                 data,
+                sized: false,
                 largest: Cell::new(0),
+            }
+        }
+
+        /// Return a source with a known size.
+        fn sized(data: Vec<u8>) -> Self {
+            Self {
+                sized: true,
+                ..Self::new(data)
             }
         }
     }
 
-    impl ReadAt for UnsizedReader {
+    impl ReadAt for CountingReader {
         fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
             self.largest.set(self.largest.get().max(buf.len()));
             SliceReader::new(&self.data).read_at(offset, buf)
         }
 
         fn size(&self) -> Option<u64> {
-            None
+            self.sized.then(|| u64::try_from(self.data.len()).unwrap())
         }
     }
 
@@ -649,7 +731,7 @@ mod tests {
             .put_u16(&mut bytes, 58, u16::MAX)
             .unwrap();
         Encoding::ELF64_LE.put_u16(&mut bytes, 60, 2000).unwrap();
-        let reader = UnsizedReader::new(bytes);
+        let reader = CountingReader::new(bytes);
         let headers = ElfHeaders::read_from(&reader, 0, SourceLayout::File).unwrap();
         assert_eq!(headers.section_headers, []);
         assert!(reader.largest.get() < 0x1_0000, "{}", reader.largest.get());
@@ -662,10 +744,28 @@ mod tests {
         Encoding::ELF64_LE
             .put_u64(&mut bytes, shoff + 2 * 64 + 32, 32 << 20)
             .unwrap();
-        let reader = UnsizedReader::new(bytes);
+        let reader = CountingReader::new(bytes);
         let headers = ElfHeaders::read_from(&reader, 0, SourceLayout::File).unwrap();
         assert_eq!(headers.section_headers.len(), 3);
         assert_eq!(headers.section_names, ["", "", ""]);
         assert!(reader.largest.get() < 0x1_0000, "{}", reader.largest.get());
+    }
+
+    #[test]
+    fn unsized_source_limits_extended_program_header_count() {
+        let encoding = Encoding::ELF64_LE;
+        let mut bytes = sample(encoding);
+        let shoff = usize::try_from(ElfHeaders::from_slice(&bytes).unwrap().header.shoff).unwrap();
+        // `e_phnum` is `PN_XNUM`: `sh_info` of section header 0 holds the count.
+        encoding.put_u16(&mut bytes, 56, PN_XNUM).unwrap();
+        let count = u32::try_from(MAX_UNSIZED_TABLE_ENTRIES + 1).unwrap();
+        encoding.put_u32(&mut bytes, shoff + 44, count).unwrap();
+        let reader = CountingReader::new(bytes);
+        let error = ElfHeaders::read_from(&reader, 0, SourceLayout::File).unwrap_err();
+        assert!(matches!(error.kind(), crate::ErrorKind::InvalidSegment(_)));
+        let context = error.context().unwrap();
+        assert_eq!(context.file_offset, Some(64));
+        assert_eq!(context.structure.as_deref(), Some("program header table"));
+        assert_eq!(reader.largest.get(), 64);
     }
 }
