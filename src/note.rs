@@ -242,8 +242,9 @@ impl NoteTable {
     /// Parse one entry at the start of `rest`. Return the note and the padded entry size.
     fn parse_entry(rest: &[u8], encoding: Encoding, align: usize) -> Result<(Note, usize)> {
         let truncated = || Error::invalid_table("truncated note entry");
-        let namesz = usize::try_from(encoding.read_u32(rest, 0)?).map_err(|_| truncated())?;
-        let descsz = usize::try_from(encoding.read_u32(rest, 4)?).map_err(|_| truncated())?;
+        // A `usize` has at least 32 bits, so the sizes convert without loss.
+        let namesz = usize::try_from(encoding.read_u32(rest, 0)?).unwrap_or(usize::MAX);
+        let descsz = usize::try_from(encoding.read_u32(rest, 4)?).unwrap_or(usize::MAX);
         let note_type = encoding.read_u32(rest, 8)?;
         let name_end = NOTE_HEADER_SIZE.checked_add(namesz).ok_or_else(truncated)?;
         let raw_name = rest.get(NOTE_HEADER_SIZE..name_end).ok_or_else(truncated)?;

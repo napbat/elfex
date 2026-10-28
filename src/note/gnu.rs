@@ -150,7 +150,8 @@ pub fn parse_gnu_properties(desc: &[u8], encoding: Encoding) -> Result<Vec<GnuPr
         let datasz = encoding
             .read_u32(desc, pos + 4)
             .map_err(|_| truncated(pos))?;
-        let datasz = usize::try_from(datasz).map_err(|_| truncated(pos))?;
+        // A `usize` has at least 32 bits, so the size converts without loss.
+        let datasz = usize::try_from(datasz).unwrap_or(usize::MAX);
         let start = pos + 8;
         let end = start.checked_add(datasz).ok_or_else(|| truncated(pos))?;
         let data = desc.get(start..end).ok_or_else(|| truncated(pos))?;
@@ -158,10 +159,8 @@ pub fn parse_gnu_properties(desc: &[u8], encoding: Encoding) -> Result<Vec<GnuPr
             pr_type,
             data: data.to_vec(),
         });
-        pos = end
-            .checked_add(align - 1)
-            .map(|v| v & !(align - 1))
-            .ok_or_else(|| truncated(pos))?;
+        // `end` is at most the length of `desc`, so the padding does not overflow.
+        pos = end.saturating_add(align - 1) & !(align - 1);
     }
     Ok(props)
 }
@@ -271,9 +270,29 @@ mod tests {
     #[test]
     fn properties_truncated() {
         let enc = Encoding::ELF64_LE;
-        let err = parse_gnu_properties(&[2, 0, 0, 0xc0, 8, 0, 0, 0, 1, 0], enc).unwrap_err();
-        assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
-        let err = parse_gnu_properties(&[2, 0, 0], enc).unwrap_err();
-        assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
+        // The data, then `pr_datasz`, then `pr_type` is cut. The error is at the property.
+        for (desc, offset) in [
+            (&[2, 0, 0, 0xc0, 8, 0, 0, 0, 1, 0][..], 0),
+            (&[2, 0, 0, 0xc0, 0, 0, 0, 0, 2, 0, 0, 0xc0, 4][..], 8),
+            (&[2, 0, 0][..], 0),
+        ] {
+            let err = parse_gnu_properties(desc, enc).unwrap_err();
+            assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
+            let context = err.context().unwrap();
+            assert_eq!(context.structure.as_deref(), Some("NT_GNU_PROPERTY_TYPE_0"));
+            assert_eq!(context.file_offset, Some(offset));
+        }
+    }
+
+    #[test]
+    fn property_as_u32_needs_four_bytes() {
+        let enc = Encoding::ELF32_LE;
+        for data in [vec![], vec![1, 2, 3], vec![1, 2, 3, 4, 5, 6, 7, 8]] {
+            let prop = GnuProperty {
+                pr_type: GNU_PROPERTY_STACK_SIZE,
+                data,
+            };
+            assert_eq!(prop.as_u32(enc), None);
+        }
     }
 }

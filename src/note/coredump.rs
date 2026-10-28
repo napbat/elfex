@@ -304,6 +304,50 @@ mod tests {
         assert!(parse_nt_file(&[1, 2], Encoding::ELF64_LE).is_err());
     }
 
+    /// Check that `result` is an error in the `NT_FILE` structure: `InvalidUtf8` if `utf8` is
+    /// `true`, else `InvalidTable`.
+    fn nt_file_error<T: core::fmt::Debug>(result: Result<T>, utf8: bool) {
+        let err = result.unwrap_err();
+        if utf8 {
+            assert!(matches!(err.kind(), ErrorKind::InvalidUtf8), "{err:?}");
+        } else {
+            assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)), "{err:?}");
+        }
+        assert_eq!(err.context().unwrap().structure.as_deref(), Some("NT_FILE"));
+    }
+
+    #[test]
+    fn nt_file_malformed_descriptor() {
+        let enc = Encoding::ELF64_LE;
+        // The page size is missing.
+        let mut d = Vec::new();
+        enc.write_u64(&mut d, 0);
+        nt_file_error(parse_nt_file(&d, enc), false);
+        // The page offset times the page size overflows.
+        let mut d = Vec::new();
+        for word in [1, 0x1000, 0x2000, 0x3000, u64::MAX] {
+            enc.write_u64(&mut d, word);
+        }
+        d.extend_from_slice(b"/a\0");
+        nt_file_error(parse_nt_file(&d, enc), false);
+        // The path is not UTF-8.
+        let len = d.len();
+        enc.put_u64(&mut d, 32, 1).unwrap();
+        d[len - 2] = 0xff;
+        nt_file_error(parse_nt_file(&d, enc), true);
+    }
+
+    #[test]
+    fn nt_file_write_errors() {
+        let enc = Encoding::ELF32_BE;
+        nt_file_error(write_nt_file(0, &mappings(), enc), false);
+        // The second mapping starts at offset 0x2000, which is not a multiple of 0x3000.
+        nt_file_error(write_nt_file(0x3000, &mappings(), enc), false);
+        let mut bad_path = mappings();
+        bad_path[1].path = "/a\0b".to_string();
+        nt_file_error(write_nt_file(0x1000, &bad_path, enc), false);
+    }
+
     #[test]
     fn auxv_round_trip() {
         let entries = vec![
