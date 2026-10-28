@@ -275,4 +275,32 @@ mod tests {
         assert!(header.contains_vaddr(0x40_102f));
         assert!(!header.contains_vaddr(0x40_1030));
     }
+
+    #[test]
+    fn flag_accessors_read_one_flag_each() {
+        for (flags, expected) in [
+            (PF_R, (true, false, false)),
+            (PF_W, (false, true, false)),
+            (PF_X, (false, false, true)),
+            (0, (false, false, false)),
+        ] {
+            let header = ProgramHeader {
+                flags,
+                ..ProgramHeader::default()
+            };
+            let actual = (
+                header.is_readable(),
+                header.is_writable(),
+                header.is_executable(),
+            );
+            assert_eq!(actual, expected, "{flags:#x}");
+        }
+        let wrapping = ProgramHeader {
+            vaddr: u64::MAX,
+            memsz: 2,
+            ..ProgramHeader::default()
+        };
+        assert_eq!(wrapping.memory_range(), None);
+        assert!(!wrapping.contains_vaddr(u64::MAX));
+    }
 }
