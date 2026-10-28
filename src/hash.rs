@@ -10,6 +10,37 @@
 //!
 //! The tables contain symbol indexes only. A lookup gets the symbol names from a callback,
 //! because the names are in the dynamic symbol table and the dynamic string table.
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::hash::{GnuHashTable, SysvHashTable, sysv_hash_entry_size};
+//! use elfex::{Encoding, Machine};
+//!
+//! let encoding = Encoding::ELF64_LE;
+//! // The names of the dynamic symbols. Symbol 0 is the null symbol.
+//! let names: [&[u8]; 3] = [b"", b"malloc", b"free"];
+//! let name_of = |index: u32| names.get(usize::try_from(index).ok()?).copied();
+//!
+//! let entry_size = sysv_hash_entry_size(Machine::X86_64, encoding.class);
+//! let table = SysvHashTable::build(&names, 0)?;
+//! let bytes = table.write(encoding, entry_size)?;
+//! let parsed = SysvHashTable::parse(&bytes, encoding, entry_size)?;
+//! assert_eq!(parsed, table);
+//! assert_eq!(parsed.lookup(b"free", name_of), Some(2));
+//! assert_eq!(parsed.lookup(b"calloc", name_of), None);
+//!
+//! // The GNU table hashes the symbols from index 1. It can reorder them: `order` gives the
+//! // old position of each hashed symbol.
+//! let (table, order) = GnuHashTable::build(&names[1..], 1, encoding, 0)?;
+//! let mut sorted = vec![names[0]];
+//! sorted.extend(order.iter().map(|&position| names[1 + position]));
+//! let parsed = GnuHashTable::parse(&table.write(encoding)?, encoding)?;
+//! let sorted_name_of = |index: u32| sorted.get(usize::try_from(index).ok()?).copied();
+//! let index = parsed.lookup(b"malloc", sorted_name_of);
+//! assert_eq!(index.and_then(sorted_name_of), Some(&b"malloc"[..]));
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 use crate::endian::{Class, Encoding};
 use crate::header::Machine;
