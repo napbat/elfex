@@ -1,0 +1,37 @@
+//! Common `LoongArch` relocation types (`EM_LOONGARCH`). This list is not complete.
+
+reloc_types! {
+    R_LARCH_NONE = 0;
+    R_LARCH_32 = 1;
+    R_LARCH_64 = 2;
+    R_LARCH_RELATIVE = 3;
+    R_LARCH_COPY = 4;
+    R_LARCH_JUMP_SLOT = 5;
+    R_LARCH_TLS_DTPMOD32 = 6;
+    R_LARCH_TLS_DTPMOD64 = 7;
+    R_LARCH_TLS_DTPREL32 = 8;
+    R_LARCH_TLS_DTPREL64 = 9;
+    R_LARCH_TLS_TPREL32 = 10;
+    R_LARCH_TLS_TPREL64 = 11;
+    R_LARCH_IRELATIVE = 12;
+    R_LARCH_TLS_DESC32 = 13;
+    R_LARCH_TLS_DESC64 = 14;
+    R_LARCH_ADD32 = 50;
+    R_LARCH_ADD64 = 51;
+    R_LARCH_SUB32 = 55;
+    R_LARCH_SUB64 = 56;
+    R_LARCH_B16 = 64;
+    R_LARCH_B21 = 65;
+    R_LARCH_B26 = 66;
+    R_LARCH_ABS_HI20 = 67;
+    R_LARCH_ABS_LO12 = 68;
+    R_LARCH_ABS64_LO20 = 69;
+    R_LARCH_ABS64_HI12 = 70;
+    R_LARCH_PCALA_HI20 = 71;
+    R_LARCH_PCALA_LO12 = 72;
+    R_LARCH_GOT_PC_HI20 = 75;
+    R_LARCH_GOT_PC_LO12 = 76;
+    R_LARCH_RELAX = 100;
+    R_LARCH_ALIGN = 102;
+    R_LARCH_CALL36 = 110;
+}
