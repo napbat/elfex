@@ -343,12 +343,19 @@ fn section_groups_give_flags_signatures_and_members() {
         ]
     );
 
-    // A group without a symbol table link has no signature. An empty group is an error.
+    // A group without a symbol table link, or with a symbol index past the table, has no
+    // signature. An empty group is an error.
     let mut edited = elf.clone();
+    edited.section_headers_mut()[usize_of(GROUP)].info = 99;
+    assert_eq!(edited.section_groups().unwrap()[0].signature, None);
     edited.section_headers_mut()[usize_of(GROUP)].link = 0;
     assert_eq!(edited.section_groups().unwrap()[0].signature, None);
     edited.section_headers_mut()[usize_of(GROUP)].size = 0;
-    assert!(edited.section_groups().is_err());
+    let error = edited.section_groups().unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidSection(_)),
+        "{error}"
+    );
 }
 
 #[test]

@@ -343,9 +343,8 @@ impl ElfFile {
         header: &SectionHeader,
         tables: &mut BTreeMap<usize, Option<LinkedSymbols>>,
     ) -> Result<Option<String>> {
-        let Ok(link) = usize::try_from(header.link) else {
-            return Ok(None);
-        };
+        // An index that does not fit in `usize` is not a section, so the group has no signature.
+        let link = usize::try_from(header.link).unwrap_or(usize::MAX);
         let linked = match tables.entry(link) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
