@@ -205,6 +205,22 @@ impl Relocation {
         irelative_type(machine) == Some(self.r_type)
     }
 
+    /// Return the spec name of the relocation type for `machine`, for example
+    /// `"R_X86_64_RELATIVE"` (see [`relocation_type_name`]).
+    ///
+    /// For MIPS, the name is the name of the first type: the low byte of
+    /// [`r_type`](Self::r_type). An ELF64 MIPS entry packs up to three types in this field.
+    /// Return `None` for an unknown machine or type.
+    #[must_use]
+    pub const fn type_name(&self, machine: Machine) -> Option<&'static str> {
+        let r_type = if machine.0 == Machine::MIPS.0 {
+            self.r_type & 0xff
+        } else {
+            self.r_type
+        };
+        relocation_type_name(machine, r_type)
+    }
+
     /// Return the spec name of the entry structure.
     const fn structure_name(&self, class: Class) -> &'static str {
         match (class, self.addend.is_some()) {

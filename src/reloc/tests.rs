@@ -331,6 +331,25 @@ fn type_names_and_helpers() {
     assert!(!Relocation::new(0, 0, 3).is_relative(Machine::MIPS));
 }
 
+#[test]
+fn relocation_type_name_method() {
+    let relative = Relocation::with_addend(0x2000, 0, x86_64::R_X86_64_RELATIVE, 0x10);
+    assert_eq!(
+        relative.type_name(Machine::X86_64),
+        Some("R_X86_64_RELATIVE")
+    );
+    assert_eq!(relative.type_name(Machine::NONE), None);
+    // ELF64 MIPS packs three types: R_MIPS_GPREL32, R_MIPS_64 and R_MIPS_NONE.
+    let packed = mips::R_MIPS_GPREL32 | (mips::R_MIPS_64 << 8);
+    let mips64 = Relocation::new(0x1000, 1, packed);
+    assert_eq!(mips64.type_name(Machine::MIPS), Some("R_MIPS_GPREL32"));
+    // Other machines use all bits of the type.
+    assert_eq!(
+        Relocation::new(0, 0, 0x108).type_name(Machine::X86_64),
+        None
+    );
+}
+
 /// Return the word size of `encoding` as a `u64`.
 fn word_size(encoding: Encoding) -> u64 {
     u64::try_from(encoding.addr_size()).unwrap()
