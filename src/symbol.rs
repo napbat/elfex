@@ -9,6 +9,40 @@
 //! - Use [`SymbolTableBuilder`] to make a new symbol table and its string table.
 //! - [`NamedSymbol`] is a symbol with its name, its section and its version. The symbol
 //!   accessors of `ElfFile` and `ElfImage` return it.
+//!
+//! [`SymbolBinding`], [`SymbolType`] and [`SymbolVisibility`] give the fields of `st_info` and
+//! `st_other`.
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::strtab::StringTable;
+//! use elfex::symbol::{NewSymbol, SymbolBinding, SymbolTable, SymbolTableBuilder, SymbolType};
+//! use elfex::Encoding;
+//!
+//! let encoding = Encoding::ELF64_LE;
+//! let mut builder = SymbolTableBuilder::new(encoding);
+//! builder.add(
+//!     NewSymbol::new("main", SymbolBinding::GLOBAL, SymbolType::FUNC)
+//!         .with_value(0x40_1000)
+//!         .with_size(16)
+//!         .with_shndx(1),
+//! );
+//! builder.add(NewSymbol::new("helper", SymbolBinding::LOCAL, SymbolType::FUNC));
+//! let built = builder.try_build()?;
+//! // The null symbol comes first, then the local symbols, then the other symbols.
+//! assert_eq!(built.indices, [2, 1]);
+//! assert_eq!(built.first_non_local, 2);
+//!
+//! let table = SymbolTable::parse(&built.symbols, encoding)?;
+//! let strings = StringTable::parse(&built.strings);
+//! let main = table.get(2).expect("the table has 3 symbols");
+//! assert_eq!(strings.get(main.name)?, "main");
+//! assert_eq!(main.value, 0x40_1000);
+//! assert_eq!(main.symbol_type(), SymbolType::FUNC);
+//! assert_eq!(table.write(encoding)?, built.symbols);
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 mod builder;
 mod named;
