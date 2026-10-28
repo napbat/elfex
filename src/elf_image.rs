@@ -2,16 +2,23 @@
 //!
 //! [`ElfImage`] holds the ELF file header and one [`Segment`] for each program header. It has
 //! no sections. Use it for a loader-mapped image, for the memory of a remote process, or to
-//! read a raw file as the loader sees it. Use `ElfFile` for sections and for lossless edits of
-//! a raw file.
+//! read a raw file as the loader sees it. Use [`ElfFile`](crate::ElfFile) for sections and for
+//! lossless edits of a raw file.
 //!
 //! # Examples
 //!
-//! ```no_run
+//! ```
 //! use elfex::elf_image::ElfImage;
+//! # use elfex::section::{SHF_ALLOC, SHF_EXECINSTR};
+//! # use elfex::{BuilderSection, ElfBuilder, Encoding};
 //!
-//! # let file_bytes: &[u8] = &[];
-//! let image = ElfImage::parse(file_bytes)?;
+//! # let file_bytes = ElfBuilder::new(Encoding::ELF64_LE)
+//! #     .interpreter("/lib/ld.so")
+//! #     .add_section(BuilderSection::progbits(".text", SHF_ALLOC | SHF_EXECINSTR, vec![0xc3]))
+//! #     .entry_in_section(".text", 0)
+//! #     .try_build()?
+//! #     .try_build()?;
+//! let image = ElfImage::parse(&file_bytes)?;
 //! println!("Entry point: {:#x}", image.entry_point());
 //! for segment in image.load_segments() {
 //!     println!(
@@ -97,6 +104,30 @@ impl Segment {
 ///   [`Self::write_vaddr`].
 /// - Make a loader-mapped image with [`Self::to_mapped_image`], and a raw file without
 ///   sections with [`Self::try_build`].
+///
+/// # Examples
+///
+/// ```
+/// use elfex::program::SegmentType;
+/// use elfex::section::{SHF_ALLOC, SHF_WRITE};
+/// use elfex::{BuilderSection, ElfBuilder, ElfImage, Encoding, SourceLayout};
+///
+/// let file = ElfBuilder::new(Encoding::ELF64_LE)
+///     .add_section(BuilderSection::progbits(".data", SHF_ALLOC | SHF_WRITE, vec![1, 2, 3, 4]))
+///     .try_build()?;
+/// let data = file.section_by_name(".data").expect("the file has .data").header.addr;
+///
+/// let image = ElfImage::parse(&file.try_build()?)?;
+/// assert_eq!(image.source_layout(), SourceLayout::File);
+/// assert_eq!(image.read_vaddr(data, 4)?, [1, 2, 3, 4]);
+/// assert!(image.segment(SegmentType::GNU_STACK).is_some());
+///
+/// // Make the bytes that a loader maps, and parse them again.
+/// let mapped = ElfImage::parse_mapped(&image.to_mapped_image()?)?;
+/// assert_eq!(mapped.source_layout(), SourceLayout::Mapped);
+/// assert_eq!(mapped.read_vaddr(data, 4)?, [1, 2, 3, 4]);
+/// # Ok::<(), elfex::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElfImage {
     /// The ELF file header (`Elf32_Ehdr` or `Elf64_Ehdr`).
