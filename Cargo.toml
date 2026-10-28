@@ -9,9 +9,28 @@ rust-version = "1.88"
 description = "A no_std-friendly parser, editor, and builder for raw and mapped ELF images"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/napbat/elfex"
+documentation = "https://docs.rs/elfex"
 readme = "README.md"
 keywords = ["elf", "executable", "linux", "shared-object", "parser"]
-categories = ["parsing", "development-tools"]
+categories = ["parsing", "development-tools", "no-std"]
+# Keep the sources, the examples, the README, the changelog and the license files.
+exclude = [
+    "/.github",
+    "/fuzz",
+    "/scripts",
+    "/tests",
+    "/.gitattributes",
+    "/.gitignore",
+    "/.pre-commit-config.yaml",
+    "/AGENTS.md",
+    "/clippy.toml",
+    "/mise.toml",
+    "/rust-toolchain.toml",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["std"]
