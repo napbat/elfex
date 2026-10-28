@@ -1,23 +1,30 @@
-//! ELF validation framework.
+//! Validation results: the structural problems of an ELF file or image.
 //!
-//! This module checks the structural integrity of an ELF file or image.
+//! [`ElfFile::validate`](crate::ElfFile::validate) and
+//! [`ElfImage::validate`](crate::ElfImage::validate) check the headers and return a
+//! [`ValidationResult`]. Each [`ValidationIssue`] has a [`ValidationLevel`] and a
+//! [`ValidationCode`].
 //!
-//! # Example
+//! # Examples
 //!
-//! ```no_run
-//! use elfex::ElfFile;
+//! ```
+//! use elfex::section::{SHF_ALLOC, SHF_EXECINSTR};
+//! use elfex::{BuilderSection, ElfBuilder, Encoding, ValidationCode};
 //!
-//! # let file_bytes: &[u8] = &[];
-//! let elf = ElfFile::parse(file_bytes).unwrap();
-//! let issues = elf.validate();
+//! let mut file = ElfBuilder::new(Encoding::ELF64_LE)
+//!     .add_section(BuilderSection::progbits(".text", SHF_ALLOC | SHF_EXECINSTR, vec![0xc3]))
+//!     .entry_in_section(".text", 0)
+//!     .try_build()?;
+//! assert!(!file.validate().has_errors());
 //!
+//! // Move the entry point out of the executable segment.
+//! file.set_entry_point(0x10);
+//! let issues = file.validate();
 //! for issue in &issues {
 //!     println!("{}: {}", issue.level, issue.message);
 //! }
-//!
-//! if issues.has_errors() {
-//!     eprintln!("ELF has structural errors!");
-//! }
+//! assert!(issues.contains(ValidationCode::EntryPointOutOfBounds));
+//! # Ok::<(), elfex::Error>(())
 //! ```
 
 use crate::prelude::*;
