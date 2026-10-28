@@ -59,7 +59,9 @@ pub enum ValidationCode {
     /// The file type does not agree with the content, for example `ET_EXEC` without
     /// `PT_LOAD` segments.
     InconsistentFileType,
-    /// The entry point is not in an executable `PT_LOAD` segment.
+    /// The entry point is not in an executable `PT_LOAD` segment. For the 64-bit PowerPC
+    /// `ELFv1` ABI, the entry point is a function descriptor, so any `PT_LOAD` segment is
+    /// correct.
     EntryPointOutOfBounds,
     /// A segment or the program header table goes past the end of the file.
     SegmentOutOfFile,

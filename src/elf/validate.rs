@@ -5,7 +5,7 @@
 //! section data.
 
 use super::ElfHeaders;
-use crate::header::{FileHeader, FileType};
+use crate::header::{FileHeader, FileType, Machine};
 use crate::ident::EV_CURRENT;
 use crate::prelude::*;
 use crate::program::{ProgramHeader, SegmentType};
@@ -227,20 +227,35 @@ fn check_file_type(headers: &ElfHeaders, result: &mut ValidationResult) {
     }
 }
 
-/// Check that the entry point is in an executable `PT_LOAD` segment.
+/// The `EF_PPC64_ABI` bits of `e_flags`: 1 for the `ELFv1` ABI, 2 for the `ELFv2` ABI, 0 if
+/// the file does not say. A file without the bits uses the `ELFv1` ABI.
+const EF_PPC64_ABI: u32 = 3;
+
+/// Return `true` if `e_entry` is the address of a function descriptor, not of code.
+///
+/// In the 64-bit PowerPC `ELFv1` ABI, `e_entry` points to the function descriptor of the
+/// entry function in `.opd`. `.opd` is data, so the segment is not executable.
+fn entry_is_descriptor(headers: &ElfHeaders) -> bool {
+    headers.machine() == Machine::PPC64 && headers.header.flags & EF_PPC64_ABI != 2
+}
+
+/// Check that the entry point is in an executable `PT_LOAD` segment. For a function
+/// descriptor (see [`entry_is_descriptor`]), any `PT_LOAD` segment is correct.
 fn check_entry_point(headers: &ElfHeaders, result: &mut ValidationResult) {
     let entry = headers.entry_point();
     if !is_loadable(headers.file_type()) || entry == 0 {
         return;
     }
+    let descriptor = entry_is_descriptor(headers);
     let in_code = headers
         .load_segments()
-        .any(|segment| segment.is_executable() && segment.contains_vaddr(entry));
+        .any(|segment| (descriptor || segment.is_executable()) && segment.contains_vaddr(entry));
     if !in_code {
+        let segment = if descriptor { "a" } else { "an executable" };
         result.push(
             ValidationIssue::error(
                 ValidationCode::EntryPointOutOfBounds,
-                format!("the entry point {entry:#x} is not in an executable PT_LOAD segment"),
+                format!("the entry point {entry:#x} is not in {segment} PT_LOAD segment"),
             )
             .with_context("e_entry"),
         );
@@ -865,6 +880,24 @@ mod tests {
         assert!(check(&headers).contains(ValidationCode::EntryPointOutOfBounds));
         headers.header.file_type = FileType::CORE;
         assert!(!check(&headers).contains(ValidationCode::EntryPointOutOfBounds));
+    }
+
+    #[test]
+    fn accepts_a_ppc64_elfv1_entry_point_in_a_data_segment() {
+        // The ELFv1 entry point is a function descriptor in `.opd`, in a data segment.
+        let mut headers = sample();
+        headers.header.machine = Machine::PPC64;
+        headers.header.entry = 0x40_2010;
+        for flags in [0, 1] {
+            headers.header.flags = flags;
+            assert!(check(&headers).is_ok(), "{:?}", check(&headers));
+        }
+        headers.header.entry = 0x50_0000;
+        assert!(check(&headers).contains(ValidationCode::EntryPointOutOfBounds));
+        // The ELFv2 entry point is code.
+        headers.header.flags = 2;
+        headers.header.entry = 0x40_2010;
+        assert!(check(&headers).contains(ValidationCode::EntryPointOutOfBounds));
     }
 
     #[test]
