@@ -22,7 +22,13 @@ fuzz_target!(|data: &[u8]| {
     );
     let _ = file.validate();
     let _ = file.symbols();
+    let _ = file.symbol_list();
+    let _ = file.lookup_symbol("main");
+    let _ = file.relocation_sections();
+    let _ = file.section_groups();
     let _ = file.notes();
+    let _ = file.core_file_mappings();
+    let _ = file.auxv();
     let _ = file.dynamic_relocations();
     let _ = file.exports();
 });

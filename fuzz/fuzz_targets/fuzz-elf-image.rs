@@ -22,10 +22,12 @@ fuzz_target!(|data: &[u8]| {
     }
 });
 
-/// Run the build paths, the validation and the dynamic symbol accessor on `image`.
+/// Run the build paths, the validation and the symbol and note accessors on `image`.
 fn exercise(image: &ElfImage) {
     let _ = image.validate();
     let _ = image.dynamic_symbol_list();
+    let _ = image.core_file_mappings();
+    let _ = image.auxv();
     let small = image
         .headers()
         .mapped_size()
