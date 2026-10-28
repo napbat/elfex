@@ -137,3 +137,21 @@ CI also runs Clippy and the tests for `i686-pc-windows-msvc`. To check 32-bit `u
 `--target i686-pc-windows-msvc` to the Clippy and test commands.
 
 `mise run precommit` runs the format and Clippy checks.
+
+The corpus test is optional. Run it on Linux or WSL after a change to the parsers, the
+accessors or the edits. It needs a corpus from `scripts/build-corpus.sh` and `llvm-readelf`:
+
+```sh
+scripts/build-corpus.sh ~/elfex-corpus
+ELFEX_CORPUS=~/elfex-corpus:/usr/bin:/usr/lib/x86_64-linux-gnu \
+    cargo test --release --test corpus -- --ignored --nocapture
+```
+
+- Make sure that the summary shows no failures. The README lists the environment variables.
+- If the test finds a defect in Elfex, fix it and add a unit regression test.
+- If the reference tool is wrong, change the comparison in `tests/corpus/compare` and give
+  the reason in a comment.
+- If a toolchain output is wrong, add the defect to `tests/corpus/defects.rs` with the
+  reason.
+- The ignored `edit_and_run` test also runs edited programs. It needs `qemu-user` for the
+  AArch64 and POWER programs.
