@@ -15,6 +15,8 @@ use crate::version::{
     VER_FLG_BASE, VersionDefinition, VersionNeedEntry, VersionRequirement, VersymTable,
 };
 
+mod sections;
+
 /// One contiguous memory range at `base`, a dynamic table and note tables.
 struct Flat {
     encoding: Encoding,
@@ -27,6 +29,8 @@ struct Flat {
     notes: Vec<(Vec<u8>, u64)>,
     /// The virtual address and the bytes of a `PT_GNU_EH_FRAME` segment.
     eh_frame_hdr: Option<(u64, Vec<u8>)>,
+    /// Table sections: the table, the bytes, `sh_entsize` and `sh_info`.
+    tables: Vec<(TableSection, Vec<u8>, u64, u32)>,
 }
 
 impl Flat {
@@ -40,6 +44,7 @@ impl Flat {
             pointer_bias: 0,
             notes: Vec::new(),
             eh_frame_hdr: None,
+            tables: Vec::new(),
         }
     }
 
@@ -119,6 +124,18 @@ impl AddressSpace for Flat {
                 address: *address,
             })
             .collect())
+    }
+
+    fn table_section(&self, table: TableSection) -> Result<Option<SectionTable<'_>>> {
+        Ok(self
+            .tables
+            .iter()
+            .find(|(kind, ..)| *kind == table)
+            .map(|(_, data, entsize, info)| SectionTable {
+                data,
+                entsize: *entsize,
+                info: *info,
+            }))
     }
 }
 

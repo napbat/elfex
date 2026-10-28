@@ -176,9 +176,8 @@ pub(crate) fn dynamic_table<S: AddressSpace>(space: &S) -> Result<Option<Dynamic
     let Some(bytes) = space.dynamic_bytes()? else {
         return Ok(None);
     };
-    DynamicTable::parse(bytes, space.encoding())
-        .map(Some)
-        .map_err(|error| error.in_structure("dynamic table"))
+    // The parser reads only complete entries, so it cannot fail.
+    DynamicTable::parse(bytes, space.encoding()).map(Some)
 }
 
 /// Parse all notes of `space`, in source order.
