@@ -63,7 +63,6 @@ impl RelrTable {
             ))
             .in_structure(structure));
         }
-        let cap = bytes.len().saturating_mul(64);
         let span = word.saturating_mul(word * 8 - 1);
         // The highest address of the class.
         let limit = if encoding.is_64bit() {
@@ -118,12 +117,6 @@ impl RelrTable {
                     index += 1;
                 }
                 base = advance(start, span).map_or(BitmapBase::End, BitmapBase::At);
-            }
-            if addresses.len() > cap {
-                return Err(
-                    Error::invalid_table("RELR table decodes to too many addresses")
-                        .in_structure(structure),
-                );
             }
             offset += size;
         }

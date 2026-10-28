@@ -183,7 +183,7 @@ impl Relocation {
         let mut entry = Vec::with_capacity(Self::size(encoding.class, self.addend.is_some()));
         encoding
             .write_addr(&mut entry, self.offset)
-            .map_err(|e| e.in_structure(self.structure_name(encoding.class)))?;
+            .map_err(|e| e.in_structure(self.elf32_structure_name()))?;
         match encoding.class {
             Class::Elf32 => {
                 if self.symbol > 0x00ff_ffff {
@@ -191,14 +191,14 @@ impl Relocation {
                         "symbol index {} does not fit in ELF32 r_info",
                         self.symbol
                     ))
-                    .in_structure(self.structure_name(encoding.class)));
+                    .in_structure(self.elf32_structure_name()));
                 }
                 if self.r_type > 0xff {
                     return Err(Error::value_out_of_range(format!(
                         "relocation type {:#x} does not fit in ELF32 r_info",
                         self.r_type
                     ))
-                    .in_structure(self.structure_name(encoding.class)));
+                    .in_structure(self.elf32_structure_name()));
                 }
                 encoding.write_u32(&mut entry, (self.symbol << 8) | self.r_type);
             }
@@ -212,7 +212,7 @@ impl Relocation {
         if let Some(addend) = self.addend {
             encoding
                 .write_signed_addr(&mut entry, addend)
-                .map_err(|e| e.in_structure(self.structure_name(encoding.class)))?;
+                .map_err(|e| e.in_structure(self.elf32_structure_name()))?;
         }
         out.extend_from_slice(&entry);
         Ok(())
@@ -248,13 +248,12 @@ impl Relocation {
         relocation_type_name(machine, r_type)
     }
 
-    /// Return the spec name of the entry structure.
-    const fn structure_name(&self, class: Class) -> &'static str {
-        match (class, self.addend.is_some()) {
-            (Class::Elf32, false) => "Elf32_Rel",
-            (Class::Elf32, true) => "Elf32_Rela",
-            (Class::Elf64, false) => "Elf64_Rel",
-            (Class::Elf64, true) => "Elf64_Rela",
+    /// Return the spec name of the ELF32 entry structure. Only ELF32 fields can overflow.
+    const fn elf32_structure_name(&self) -> &'static str {
+        if self.addend.is_some() {
+            "Elf32_Rela"
+        } else {
+            "Elf32_Rel"
         }
     }
 }
@@ -375,15 +374,10 @@ impl RelocationTable {
             ))
             .in_structure(structure));
         }
+        // Each chunk has at least `min` bytes, so the parse of an entry cannot fail.
         let relocations = bytes
             .chunks_exact(entsize)
-            .enumerate()
-            .map(|(index, chunk)| {
-                Relocation::parse(chunk, encoding, machine, with_addend).map_err(|e| {
-                    e.in_structure(structure)
-                        .at_offset(u64::try_from(index.saturating_mul(entsize)).unwrap_or(u64::MAX))
-                })
-            })
+            .map(|chunk| Relocation::parse(chunk, encoding, machine, with_addend))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             relocations,

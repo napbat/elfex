@@ -127,6 +127,20 @@ fn elf32_overflow_errors() {
         );
         assert_eq!(out, []);
     }
+    let err = Relocation::with_addend(0, 1, 1, i64::MIN)
+        .write(&mut Vec::new(), encoding, Machine::I386)
+        .unwrap_err();
+    let structure = err
+        .context()
+        .and_then(|context| context.structure.as_deref());
+    assert_eq!(structure, Some("Elf32_Rela"));
+    let err = Relocation::new(0, 0x0100_0000, 1)
+        .write(&mut Vec::new(), encoding, Machine::I386)
+        .unwrap_err();
+    let structure = err
+        .context()
+        .and_then(|context| context.structure.as_deref());
+    assert_eq!(structure, Some("Elf32_Rel"));
 }
 
 #[test]
@@ -175,6 +189,26 @@ fn table_addend_mismatch_and_bad_sizes() {
             .relocations,
         []
     );
+}
+
+#[test]
+fn empty_tables() {
+    let table = RelocationTable::new(true);
+    assert!(table.is_empty() && table.with_addend);
+    assert_eq!(table.iter().count(), 0);
+    assert_eq!(
+        table.write(Encoding::ELF64_LE, Machine::X86_64).unwrap(),
+        []
+    );
+    let parsed = RelocationTable::parse_rela(&[], Encoding::ELF64_BE, Machine::X86_64).unwrap();
+    assert_eq!(parsed, table);
+
+    let relr = RelrTable::default();
+    assert!(relr.is_empty());
+    assert_eq!(relr.write(Encoding::ELF32_LE).unwrap(), []);
+    let relr = RelrTable::from_addresses(vec![0x18, 0x10], Encoding::ELF64_LE).unwrap();
+    assert!(!relr.is_empty());
+    assert_eq!(relr.iter().copied().collect::<Vec<_>>(), [0x10, 0x18]);
 }
 
 #[test]
@@ -254,6 +288,14 @@ fn relr_malformed_input() {
         wide.write(Encoding::ELF32_LE).unwrap_err().kind(),
         ErrorKind::ValueOutOfRange(_)
     ));
+    let unaligned = RelrTable {
+        addresses: vec![0x1004],
+    };
+    assert!(unaligned.write(Encoding::ELF32_LE).is_ok());
+    assert!(matches!(
+        unaligned.write(Encoding::ELF64_LE).unwrap_err().kind(),
+        ErrorKind::InvalidTable(_)
+    ));
 }
 
 #[test]
@@ -329,6 +371,25 @@ fn type_names_and_helpers() {
     assert_eq!(relative_type(Machine::MIPS), None);
     assert_eq!(irelative_type(Machine::AARCH64), Some(1032));
     assert!(!Relocation::new(0, 0, 3).is_relative(Machine::MIPS));
+    // The relative and indirect relative types of each machine have names that end in
+    // RELATIVE and IRELATIVE.
+    for machine in [
+        Machine::X86_64,
+        Machine::I386,
+        Machine::AARCH64,
+        Machine::ARM,
+        Machine::RISCV,
+        Machine::PPC,
+        Machine::PPC64,
+        Machine::S390,
+        Machine::LOONGARCH,
+    ] {
+        let relative = relocation_type_name(machine, relative_type(machine).unwrap()).unwrap();
+        assert!(relative.ends_with("_RELATIVE"), "{relative}");
+        let irelative = relocation_type_name(machine, irelative_type(machine).unwrap()).unwrap();
+        assert!(irelative.ends_with("_IRELATIVE"), "{irelative}");
+    }
+    assert_eq!(irelative_type(Machine::MIPS), None);
 }
 
 #[test]
