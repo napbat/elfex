@@ -4,7 +4,7 @@
 //! - [`SectionHeader`] parses and writes one section header. [`SectionType`] gives `sh_type`.
 //! - The `SHF_*` constants (for example [`SHF_ALLOC`]) are the bits of `sh_flags`.
 //! - The `SHN_*` constants (for example [`SHN_UNDEF`]) are the reserved section indices.
-//! - [`GRP_COMDAT`] is a flag of a section group (`SHT_GROUP`).
+//! - [`crate::group`] holds the section group flags, for example `GRP_COMDAT`.
 //! - [`CompressionHeader`] and [`CompressionType`] describe `SHF_COMPRESSED` section data.
 
 use crate::endian::{ByteReader, Class, Encoding};
@@ -63,9 +63,6 @@ pub const SHF_MASKOS: u64 = 0x0ff0_0000;
 pub const SHF_MASKPROC: u64 = 0xf000_0000;
 /// `SHF_EXCLUDE`: the linker excludes the section from executables and shared objects.
 pub const SHF_EXCLUDE: u64 = 0x8000_0000;
-
-/// `GRP_COMDAT`: the section group is a COMDAT group.
-pub const GRP_COMDAT: u32 = 0x1;
 
 elf_value_type! {
     /// The section type (`sh_type`).

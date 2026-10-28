@@ -5,7 +5,7 @@
 //! table names. Most tables also write their bytes. The specialized modules hold the
 //! constants of each area and an example of each table: [`crate::dynamic`],
 //! [`crate::symbol`], [`crate::strtab`], [`crate::reloc`], [`crate::note`], [`crate::hash`],
-//! [`crate::version`] and [`crate::eh_frame`].
+//! [`crate::version`], [`crate::group`] and [`crate::eh_frame`].
 //!
 //! [`SectionGroup`] and [`RelocationSection`] are the results of [`ElfFile`](crate::ElfFile)
 //! accessors. [`DynamicRelocations`] and [`VersionTables`] are the results of the dynamic
@@ -16,6 +16,7 @@ pub use crate::eh_frame::{
     Cie, EhFrame, EhFrameEntry, EhFrameHdr, EhFrameHdrEntry, Fde, PointerBases,
 };
 pub use crate::elf_file::{RelocationSection, SectionGroup};
+pub use crate::group::GroupTable;
 pub use crate::hash::{GnuHashTable, SysvHashTable};
 pub use crate::linking::{DynamicRelocations, VersionTables};
 pub use crate::note::{AuxvEntry, FileMapping, GnuAbiTag, GnuProperty, Note, NoteTable};

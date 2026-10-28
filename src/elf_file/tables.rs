@@ -2,6 +2,7 @@
 //! sections and the section groups.
 
 use super::ElfFile;
+use crate::group::GroupTable;
 use crate::header::FileType;
 use crate::prelude::*;
 use crate::reloc::{Relocation, RelocationTable};
@@ -44,13 +45,15 @@ pub struct RelocationSection {
 
 /// A section group (`SHT_GROUP`) of an [`ElfFile`].
 ///
-/// [`ElfFile::section_groups`] returns this type. The crate has no section group writer: write
-/// the flags and the member indices as 32-bit words.
+/// [`ElfFile::section_groups`] returns this type. It adds the section index and the signature
+/// to the [`GroupTable`] data of the section. Use [`GroupTable::write`] to make the data of a
+/// new group.
 ///
 /// # Examples
 ///
 /// ```
-/// use elfex::section::{GRP_COMDAT, SHF_EXECINSTR, SHF_GROUP, SectionType};
+/// use elfex::group::{GRP_COMDAT, GroupTable};
+/// use elfex::section::{SHF_EXECINSTR, SHF_GROUP, SectionType};
 /// use elfex::symbol::{NewSymbol, SymbolBinding, SymbolTableBuilder, SymbolType};
 /// use elfex::{BuilderSection, ElfBuilder, Encoding, FileType};
 ///
@@ -59,9 +62,11 @@ pub struct RelocationSection {
 /// let mut builder = SymbolTableBuilder::new(encoding);
 /// builder.add(NewSymbol::new("foo", SymbolBinding::GLOBAL, SymbolType::FUNC).with_shndx(1));
 /// let symbols = builder.try_build()?;
-/// let mut words = Vec::new();
-/// encoding.write_u32(&mut words, GRP_COMDAT);
-/// encoding.write_u32(&mut words, 1);
+/// let words = GroupTable {
+///     flags: GRP_COMDAT,
+///     members: vec![1],
+/// }
+/// .write(encoding);
 ///
 /// let table = |name: &str, section_type, data, link: &str, info| BuilderSection {
 ///     section_type,
@@ -94,7 +99,7 @@ pub struct SectionGroup {
     /// The index of the `SHT_GROUP` section in the section header table.
     pub index: usize,
     /// The group flags: the first word of the section, for example
-    /// [`GRP_COMDAT`](crate::section::GRP_COMDAT).
+    /// [`GRP_COMDAT`](crate::group::GRP_COMDAT).
     pub flags: u32,
     /// The signature of the group: the name of the symbol `sh_info` in the symbol table
     /// `sh_link`. For an unnamed `STT_SECTION` symbol, this is the name of its section.
@@ -298,39 +303,25 @@ impl ElfFile {
     ///
     /// # Errors
     ///
-    /// - Return [`ErrorKind::InvalidSection`](crate::ErrorKind::InvalidSection) if the size
-    ///   of a group section is 0 or not a multiple of 4.
+    /// - Return [`ErrorKind::InvalidTable`](crate::ErrorKind::InvalidTable) if the size of
+    ///   a group section is 0 or not a multiple of 4.
     /// - Return an error if a section is outside the file, if the signature symbol table or
     ///   its string table does not parse, or if the name offset of the signature is outside
     ///   the string table.
     pub fn section_groups(&self) -> Result<Vec<SectionGroup>> {
-        let encoding = self.encoding();
         let mut tables: BTreeMap<usize, Option<LinkedSymbols>> = BTreeMap::new();
         let mut groups = Vec::new();
         for (index, header) in self.section_headers().iter().enumerate() {
             if header.section_type != SectionType::GROUP {
                 continue;
             }
-            let data = self.section_data(index)?;
-            if data.is_empty() || !data.len().is_multiple_of(4) {
-                return Err(Error::invalid_section(format!(
-                    "the SHT_GROUP size {} is 0 or not a multiple of 4",
-                    data.len()
-                ))
-                .in_structure(format!("section {index}")));
-            }
-            let mut words = data
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|chunk| encoding.read_u32(chunk, 0));
-            let flags = words.next().transpose()?.unwrap_or(0);
-            let members = words.collect::<Result<Vec<_>>>()?;
+            let table = GroupTable::parse(self.section_data(index)?, self.encoding())
+                .map_err(|error| error.in_structure(format!("section {index}")))?;
             groups.push(SectionGroup {
                 index,
-                flags,
+                flags: table.flags,
                 signature: self.group_signature(header, &mut tables)?,
-                members,
+                members: table.members,
             });
         }
         Ok(groups)

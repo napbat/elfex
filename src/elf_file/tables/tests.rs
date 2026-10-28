@@ -5,13 +5,13 @@ use crate::ErrorKind;
 use crate::builder::{BuilderSection, ElfBuilder};
 use crate::elf_file::ElfFile;
 use crate::endian::Encoding;
+use crate::group::GRP_COMDAT;
 use crate::header::{FileType, Machine};
 use crate::prelude::*;
 use crate::reloc::x86_64::{R_X86_64_32, R_X86_64_PLT32};
 use crate::reloc::{Relocation, RelocationTable};
 use crate::section::{
-    GRP_COMDAT, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_INFO_LINK, SHN_ABS, SHN_XINDEX,
-    SectionType,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_INFO_LINK, SHN_ABS, SHN_XINDEX, SectionType,
 };
 use crate::symbol::{
     BuiltSymbolTable, NewSymbol, SymbolBinding, SymbolSectionIndexTable, SymbolTableBuilder,
@@ -353,7 +353,7 @@ fn section_groups_give_flags_signatures_and_members() {
     edited.section_headers_mut()[usize_of(GROUP)].size = 0;
     let error = edited.section_groups().unwrap_err();
     assert!(
-        matches!(error.kind(), ErrorKind::InvalidSection(_)),
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
         "{error}"
     );
 }

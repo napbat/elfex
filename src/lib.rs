@@ -172,6 +172,7 @@ pub mod elf_file;
 pub mod elf_image;
 pub mod endian;
 pub mod error;
+pub mod group;
 pub mod hash;
 pub mod header;
 pub mod headers;
@@ -198,6 +199,7 @@ pub use elf_file::{ElfFile, NewSection, RelocationSection, SectionGroup, Section
 pub use elf_image::{ElfImage, Segment};
 pub use endian::{Class, Encoding, Endian};
 pub use error::{Error, ErrorContext, ErrorKind, Result};
+pub use group::GroupTable;
 pub use hash::{GnuHashTable, SysvHashTable};
 pub use header::{FileHeader, FileType, Machine};
 pub use ident::{Ident, OsAbi};
