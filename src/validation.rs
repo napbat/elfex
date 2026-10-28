@@ -120,6 +120,7 @@ pub struct ValidationIssue {
 
 impl ValidationIssue {
     /// Create a new error.
+    #[must_use]
     pub fn error(code: ValidationCode, message: impl Into<String>) -> Self {
         Self {
             level: ValidationLevel::Error,
@@ -130,6 +131,7 @@ impl ValidationIssue {
     }
 
     /// Create a new warning.
+    #[must_use]
     pub fn warning(code: ValidationCode, message: impl Into<String>) -> Self {
         Self {
             level: ValidationLevel::Warning,

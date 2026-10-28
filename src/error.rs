@@ -223,21 +223,25 @@ impl Error {
     }
 
     /// Create an `InvalidHeader` error.
+    #[must_use]
     pub fn invalid_header(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidHeader(msg.into()))
     }
 
     /// Create an `InvalidSegment` error.
+    #[must_use]
     pub fn invalid_segment(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidSegment(msg.into()))
     }
 
     /// Create an `InvalidSection` error.
+    #[must_use]
     pub fn invalid_section(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidSection(msg.into()))
     }
 
     /// Create an `InvalidTable` error.
+    #[must_use]
     pub fn invalid_table(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidTable(msg.into()))
     }
@@ -255,6 +259,7 @@ impl Error {
     }
 
     /// Create a `ValueOutOfRange` error.
+    #[must_use]
     pub fn value_out_of_range(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::ValueOutOfRange(msg.into()))
     }
@@ -266,6 +271,7 @@ impl Error {
     }
 
     /// Create a `Generic` error with a message.
+    #[must_use]
     pub fn generic(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::Generic(msg.into()))
     }

@@ -116,6 +116,7 @@ pub struct SeekReader<R> {
 
 impl<R> SeekReader<R> {
     /// Wrap a seekable stream. `size` is the length of the stream in bytes, if it is known.
+    #[must_use]
     pub const fn new(inner: R, size: Option<u64>) -> Self {
         Self {
             inner: RefCell::new(inner),
