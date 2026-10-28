@@ -1,22 +1,22 @@
 //! Error types for ELF parsing and writing.
 //!
-//! An error can have a context: a file offset, a virtual address, a structure name and details.
-//! Use the context to find the cause of a problem when you parse or write an ELF file.
+//! Each fallible function returns a [`Result`] with an [`Error`]. [`Error::kind`] gives the
+//! [`ErrorKind`]. An error can also have an [`ErrorContext`]: a file offset, a virtual
+//! address, a structure name and details. Use the context to find the cause of a problem when
+//! you parse or write an ELF file.
 //!
-//! # Example
+//! # Examples
 //!
-//! ```no_run
-//! use elfex::ElfFile;
+//! ```
+//! use elfex::{ElfFile, ErrorKind};
 //!
-//! # let file_bytes: &[u8] = &[];
-//! match ElfFile::parse(file_bytes) {
-//!     Ok(_elf) => println!("Loaded ELF"),
-//!     Err(e) => {
-//!         eprintln!("Error: {}", e);
-//!         if let Some(ctx) = e.context() {
-//!             eprintln!("  Context: {}", ctx);
-//!         }
-//!     }
+//! let error = ElfFile::parse(&[0; 64]).expect_err("zeros are not an ELF file");
+//! assert!(matches!(error.kind(), ErrorKind::InvalidMagic));
+//!
+//! let error = ElfFile::parse(b"\x7fELF\x02\x01\x01").expect_err("the file is truncated");
+//! assert!(matches!(error.kind(), ErrorKind::BufferTooSmall { .. }));
+//! if let Some(context) = error.context() {
+//!     println!("{error}: {context}");
 //! }
 //! ```
 
