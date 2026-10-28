@@ -30,6 +30,15 @@
 //! Each table builder serializes a table into bytes. Each `build` method panics on invalid
 //! input. Use the matching `try_build` method to get a `Result`.
 //!
+//! `ElfFile` and `ElfImage` also read the tables for you, for example
+//! [`ElfFile::dynamic_symbol_list`], [`ElfFile::notes`] and [`ElfImage::core_file_mappings`].
+//! `ElfFile` also reads the section tables of a relocatable file:
+//!
+//! - [`ElfFile::symbol_list`] and [`ElfFile::lookup_symbol`] give each symbol as a
+//!   [`NamedSymbol`] with its name and its section.
+//! - [`ElfFile::relocation_sections`] gives each [`RelocationSection`] with its target section.
+//! - [`ElfFile::section_groups`] gives each [`SectionGroup`], for example a COMDAT group.
+//!
 //! ## Example
 //!
 //! ```no_run
@@ -168,14 +177,14 @@ pub use builder::{BuilderSection, ElfBuilder};
 pub use dynamic::{DynamicEntry, DynamicInfo, DynamicTable, DynamicTag};
 pub use eh_frame::{Cie, EhFrame, EhFrameEntry, EhFrameHdr, EhFrameHdrEntry, Fde, PointerBases};
 pub use elf::{ElfHeaders, MissingSegmentData, ParseOptions, SourceLayout};
-pub use elf_file::{ElfFile, NewSection, SectionRef};
+pub use elf_file::{ElfFile, NewSection, RelocationSection, SectionGroup, SectionRef};
 pub use elf_image::{ElfImage, Segment};
 pub use endian::{Class, Encoding, Endian};
 pub use error::{Error, ErrorContext, ErrorKind, Result};
 pub use hash::{GnuHashTable, SysvHashTable};
 pub use header::{FileHeader, FileType, Machine};
 pub use ident::{Ident, OsAbi};
-pub use linking::{DynamicRelocations, DynamicSymbol, VersionTables};
+pub use linking::{DynamicRelocations, VersionTables};
 pub use note::{AuxvEntry, FileMapping, GnuAbiTag, GnuProperty, Note, NoteTable};
 pub use program::{ProgramHeader, SegmentType};
 #[cfg(feature = "std")]
@@ -185,8 +194,8 @@ pub use reloc::{Relocation, RelocationTable, RelrTable};
 pub use section::{CompressionHeader, CompressionType, SectionHeader, SectionType};
 pub use strtab::{StringTable, StringTableBuilder};
 pub use symbol::{
-    BuiltSymbolTable, NewSymbol, Symbol, SymbolBinding, SymbolSectionIndexTable, SymbolTable,
-    SymbolTableBuilder, SymbolType, SymbolVisibility,
+    BuiltSymbolTable, NamedSymbol, NewSymbol, Symbol, SymbolBinding, SymbolSectionIndexTable,
+    SymbolTable, SymbolTableBuilder, SymbolType, SymbolVisibility,
 };
 pub use validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};
 pub use version::{

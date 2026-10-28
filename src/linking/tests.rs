@@ -5,9 +5,12 @@ use crate::ErrorKind;
 use crate::dynamic::DynamicEntry;
 use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::reloc::x86_64::{R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE};
-use crate::section::SHN_UNDEF;
+use crate::section::{SHN_ABS, SHN_UNDEF, SHN_XINDEX};
 use crate::strtab::StringTableBuilder;
-use crate::symbol::{SymbolBinding, SymbolTable, SymbolType, SymbolVisibility};
+use crate::symbol::{
+    NamedSymbol, Symbol, SymbolBinding, SymbolSectionIndexTable, SymbolTable, SymbolType,
+    SymbolVisibility,
+};
 use crate::version::{
     VER_FLG_BASE, VersionDefinition, VersionNeedEntry, VersionRequirement, VersymTable,
 };
@@ -115,7 +118,7 @@ fn len(bytes: &[u8]) -> u64 {
     u64::try_from(bytes.len()).unwrap()
 }
 
-fn names(symbols: &[DynamicSymbol]) -> Vec<&str> {
+fn names(symbols: &[NamedSymbol]) -> Vec<&str> {
     symbols.iter().map(|symbol| symbol.name.as_str()).collect()
 }
 
@@ -271,7 +274,88 @@ fn symbol_count_from_string_table_distance() {
     flat.set_dynamic(&[(DynamicTag::SYMTAB, strtab), (DynamicTag::STRTAB, symtab)]);
     let linker = Linker::load(&flat).unwrap();
     assert_eq!(linker.symbols().unwrap(), None);
-    assert_eq!(linker.symbol_list().unwrap(), Vec::<DynamicSymbol>::new());
+    assert_eq!(linker.symbol_list().unwrap(), Vec::<NamedSymbol>::new());
+}
+
+#[test]
+fn mips_symbol_count_from_symtabno() {
+    let encoding = Encoding::ELF32_BE;
+    let mut strings = StringTableBuilder::new();
+    let foo = strings.add("foo").unwrap();
+    let bar = strings.add("bar").unwrap();
+    let symbols = SymbolTable {
+        symbols: vec![
+            Symbol::default(),
+            symbol(foo, 0x1100, SymbolBinding::GLOBAL, 1),
+            symbol(bar, 0x1108, SymbolBinding::GLOBAL, 1),
+        ],
+    };
+    // The hash table covers only the first two symbols.
+    let hash_names: [&[u8]; 2] = [b"", b"foo"];
+    let hash = SysvHashTable::build(&hash_names, 1).unwrap();
+    let mut flat = Flat::new(encoding, Machine::MIPS);
+    let symtab = flat.place(&symbols.write(encoding).unwrap());
+    let hash_address = flat.place(&hash.write(encoding, 4).unwrap());
+    let strtab = flat.place(strings.as_bytes());
+    flat.set_dynamic(&[
+        (DynamicTag::STRTAB, strtab),
+        (DynamicTag::STRSZ, len(strings.as_bytes())),
+        (DynamicTag::SYMTAB, symtab),
+        (DynamicTag::HASH, hash_address),
+        (DynamicTag::MIPS_SYMTABNO, 3),
+    ]);
+    let linker = Linker::load(&flat).unwrap();
+    assert_eq!(linker.symbols().unwrap(), Some(symbols.clone()));
+    assert_eq!(names(&linker.symbol_list().unwrap()), ["foo", "bar"]);
+
+    // On other machines, the tag value is not a symbol count. The hash table gives it.
+    flat.machine = Machine::PPC;
+    let linker = Linker::load(&flat).unwrap();
+    let table = linker.symbols().unwrap().unwrap();
+    assert_eq!(table.symbols, symbols.symbols[..2]);
+}
+
+#[test]
+fn dynamic_section_indices_through_symtab_shndx() {
+    let encoding = Encoding::ELF64_LE;
+    let mut strings = StringTableBuilder::new();
+    let names_list = ["big", "absolute", "undefined"];
+    let offsets: Vec<u32> = names_list
+        .iter()
+        .map(|name| strings.add(name).unwrap())
+        .collect();
+    let symbols = SymbolTable {
+        symbols: vec![
+            Symbol::default(),
+            symbol(offsets[0], 0x10, SymbolBinding::GLOBAL, SHN_XINDEX),
+            symbol(offsets[1], 0x20, SymbolBinding::GLOBAL, SHN_ABS),
+            symbol(offsets[2], 0, SymbolBinding::GLOBAL, SHN_UNDEF),
+        ],
+    };
+    let indices = SymbolSectionIndexTable {
+        indices: vec![0, 0x1_0005, 0, 0],
+    };
+    let mut flat = Flat::new(encoding, Machine::X86_64);
+    let symtab = flat.place(&symbols.write(encoding).unwrap());
+    let strtab = flat.place(strings.as_bytes());
+    let shndx = flat.place(&indices.write(encoding));
+    flat.set_dynamic(&[
+        (DynamicTag::STRTAB, strtab),
+        (DynamicTag::SYMTAB, symtab),
+        (DynamicTag::SYMTAB_SHNDX, shndx),
+    ]);
+    let linker = Linker::load(&flat).unwrap();
+    let list = linker.symbol_list().unwrap();
+    let sections: Vec<Option<u32>> = list.iter().map(|symbol| symbol.section_index).collect();
+    assert_eq!(names(&list), names_list);
+    assert_eq!(sections, [Some(0x1_0005), Some(u32::from(SHN_ABS)), None]);
+    let found = linker.lookup("big").unwrap().unwrap();
+    assert_eq!(found.section_index, Some(0x1_0005));
+
+    // Without DT_SYMTAB_SHNDX, the extended index is unknown.
+    flat.set_dynamic(&[(DynamicTag::STRTAB, strtab), (DynamicTag::SYMTAB, symtab)]);
+    let linker = Linker::load(&flat).unwrap();
+    assert_eq!(linker.lookup("big").unwrap().unwrap().section_index, None);
 }
 
 #[test]

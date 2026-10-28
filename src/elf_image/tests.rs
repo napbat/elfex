@@ -2,9 +2,14 @@
 
 use super::{ElfImage, Segment};
 use crate::elf::{ParseOptions, SourceLayout};
+use crate::elf_file::ElfFile;
 use crate::endian::Encoding;
 use crate::error::ErrorKind;
 use crate::header::{FileHeader, FileType, Machine};
+use crate::note::{
+    AT_ENTRY, AT_PAGESZ, AuxvEntry, ELF_NOTE_CORE, ELF_NOTE_LINUX, FileMapping, NT_AUXV, NT_FILE,
+    Note, NoteTable, write_auxv, write_nt_file,
+};
 use crate::prelude::*;
 use crate::program::{PF_R, PF_W, PF_X, ProgramHeader, SegmentType};
 use crate::reader::{ReadAt, SliceReader};
@@ -543,4 +548,87 @@ fn validation_detects_segment_problems() {
     });
     let result = ElfImage::parse(&misaligned).unwrap().validate();
     assert!(result.contains(ValidationCode::MisalignedSegment));
+}
+
+/// Build an `ET_CORE` file with one `PT_NOTE` segment and no sections. The notes are a
+/// `LINUX` note, an `NT_FILE` note and an `NT_AUXV` note.
+fn core_file(
+    encoding: Encoding,
+    page_size: u64,
+    mappings: &[FileMapping],
+    auxv: &[AuxvEntry],
+) -> Vec<u8> {
+    let notes = NoteTable {
+        notes: vec![
+            Note::new(ELF_NOTE_LINUX, NT_AUXV, vec![0xff; 8]),
+            Note::new(
+                ELF_NOTE_CORE,
+                NT_FILE,
+                write_nt_file(page_size, mappings, encoding).unwrap(),
+            ),
+            Note::new(ELF_NOTE_CORE, NT_AUXV, write_auxv(auxv, encoding).unwrap()),
+        ],
+    }
+    .write(encoding, 4)
+    .unwrap();
+    let mut header = FileHeader::new(encoding, FileType::CORE, Machine::X86_64);
+    header.phoff = u64::from(header.ehsize);
+    header.phnum = 1;
+    let note_offset = header.phoff + u64::from(header.phentsize);
+    let segment = ProgramHeader {
+        segment_type: SegmentType::NOTE,
+        offset: note_offset,
+        filesz: to_u64(notes.len()),
+        align: 4,
+        ..ProgramHeader::default()
+    };
+    let mut bytes = Vec::new();
+    header.write(&mut bytes).unwrap();
+    segment.write(&mut bytes, encoding).unwrap();
+    assert_eq!(to_u64(bytes.len()), note_offset);
+    bytes.extend_from_slice(&notes);
+    bytes
+}
+
+#[test]
+fn core_file_notes() {
+    let mappings = [
+        FileMapping {
+            start: 0x40_0000,
+            end: 0x40_1000,
+            file_offset: 0,
+            path: "/bin/demo".to_string(),
+        },
+        FileMapping {
+            start: 0x60_0000,
+            end: 0x60_2000,
+            file_offset: 0x2000,
+            path: "/lib/libdemo.so".to_string(),
+        },
+    ];
+    let auxv = [
+        AuxvEntry {
+            key: AT_PAGESZ,
+            value: 0x1000,
+        },
+        AuxvEntry {
+            key: AT_ENTRY,
+            value: 0x40_0100,
+        },
+    ];
+    for encoding in [Encoding::ELF64_LE, Encoding::ELF32_BE] {
+        let bytes = core_file(encoding, 0x1000, &mappings, &auxv);
+        let file = ElfFile::parse(&bytes).unwrap();
+        let image = ElfImage::parse(&bytes).unwrap();
+        let expected = Some((0x1000, mappings.to_vec()));
+        assert_eq!(file.core_file_mappings().unwrap(), expected);
+        assert_eq!(image.core_file_mappings().unwrap(), expected);
+        assert_eq!(file.auxv().unwrap(), Some(auxv.to_vec()));
+        assert_eq!(image.auxv().unwrap(), Some(auxv.to_vec()));
+    }
+
+    // A file without core notes gives `None`.
+    let image = ElfImage::parse(&sample(Encoding::ELF64_LE)).unwrap();
+    assert_eq!(image.core_file_mappings().unwrap(), None);
+    assert_eq!(image.auxv().unwrap(), None);
 }

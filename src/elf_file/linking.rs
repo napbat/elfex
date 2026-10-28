@@ -5,23 +5,22 @@
 //! table, as `ElfImage` does.
 
 use super::ElfFile;
+use crate::Result;
 use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
 use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::header::Machine;
 use crate::linking::{
-    self, AddressSpace, DynamicRelocations, DynamicSymbol, Linker, NoteSource, SectionTable,
-    SegmentBytes, TableSection, VersionTables,
+    self, AddressSpace, DynamicRelocations, Linker, NoteSource, SectionTable, SegmentBytes,
+    TableSection, VersionTables,
 };
-use crate::note::Note;
+use crate::note::{AuxvEntry, FileMapping, Note};
 use crate::prelude::*;
 use crate::program::SegmentType;
-use crate::reloc::RelocationTable;
-use crate::section::{SectionHeader, SectionType};
+use crate::section::SectionType;
 use crate::strtab::StringTable;
-use crate::symbol::SymbolTable;
-use crate::{Error, Result};
+use crate::symbol::{NamedSymbol, SymbolTable};
 
 impl AddressSpace for ElfFile {
     fn encoding(&self) -> Encoding {
@@ -98,6 +97,9 @@ impl AddressSpace for ElfFile {
             TableSection::Versym => self.file_section_index(SectionType::GNU_VERSYM),
             TableSection::Verdef => self.file_section_index(SectionType::GNU_VERDEF),
             TableSection::Verneed => self.file_section_index(SectionType::GNU_VERNEED),
+            TableSection::DynamicSymbolIndices => self
+                .file_section_index(SectionType::DYNSYM)
+                .and_then(|dynsym| self.symbol_index_section(dynsym)),
         };
         let Some(index) = index else {
             return Ok(None);
@@ -113,7 +115,7 @@ impl AddressSpace for ElfFile {
 
 impl ElfFile {
     /// Return the index of the first section of `section_type` with file bytes.
-    fn file_section_index(&self, section_type: SectionType) -> Option<usize> {
+    pub(super) fn file_section_index(&self, section_type: SectionType) -> Option<usize> {
         self.section_headers()
             .iter()
             .position(|header| header.section_type == section_type && header.has_file_data())
@@ -155,9 +157,10 @@ impl ElfFile {
     /// Return the dynamic symbol table: the `SHT_DYNSYM` section, or else the table at
     /// `DT_SYMTAB`.
     ///
-    /// Without a section, the symbol count comes from `DT_HASH`, else from `DT_GNU_HASH` and
-    /// the dynamic relocations, else from the distance between `DT_SYMTAB` and `DT_STRTAB`.
-    /// Return `None` if no source gives the count.
+    /// Without a section, the symbol count comes from `DT_MIPS_SYMTABNO` (MIPS only), else
+    /// from `DT_HASH`, else from `DT_GNU_HASH` and the dynamic relocations, else from the
+    /// distance between `DT_SYMTAB` and `DT_STRTAB`. Return `None` if no source gives the
+    /// count.
     ///
     /// # Errors
     ///
@@ -240,6 +243,33 @@ impl ElfFile {
         linking::build_id(self)
     }
 
+    /// Return the page size and the mapped files of the first `NT_FILE` note (owner `CORE`)
+    /// of a core file.
+    ///
+    /// The notes come from the `SHT_NOTE` sections, or else from the `PT_NOTE` segments.
+    /// Return `None` if the file has no such note.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::notes`], or if the descriptor
+    /// does not parse (see [`parse_nt_file`](crate::note::parse_nt_file)).
+    pub fn core_file_mappings(&self) -> Result<Option<(u64, Vec<FileMapping>)>> {
+        linking::core_file_mappings(self)
+    }
+
+    /// Return the auxiliary vector of the first `NT_AUXV` note (owner `CORE`) of a core
+    /// file, without the `AT_NULL` entry.
+    ///
+    /// Return `None` if the file has no such note.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::notes`], or if the descriptor
+    /// does not parse (see [`parse_auxv`](crate::note::parse_auxv)).
+    pub fn auxv(&self) -> Result<Option<Vec<AuxvEntry>>> {
+        linking::auxv(self)
+    }
+
     /// Return the relocation tables that the dynamic table names: `DT_RELA`, `DT_REL`,
     /// `DT_JMPREL` and `DT_RELR`.
     ///
@@ -281,13 +311,14 @@ impl ElfFile {
         Linker::load(self)?.versions(None)
     }
 
-    /// Return all dynamic symbols except the null symbol, with their names and versions.
+    /// Return all dynamic symbols except the null symbol, with their names, sections and
+    /// versions.
     ///
     /// # Errors
     ///
     /// Return an error if the dynamic symbol table, the dynamic string table or a version
     /// table does not parse, or if a name offset is outside the string table.
-    pub fn dynamic_symbol_list(&self) -> Result<Vec<DynamicSymbol>> {
+    pub fn dynamic_symbol_list(&self) -> Result<Vec<NamedSymbol>> {
         Linker::load(self)?.symbol_list()
     }
 
@@ -298,7 +329,7 @@ impl ElfFile {
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic_symbol_list`].
-    pub fn exports(&self) -> Result<Vec<DynamicSymbol>> {
+    pub fn exports(&self) -> Result<Vec<NamedSymbol>> {
         Linker::load(self)?.exports()
     }
 
@@ -308,7 +339,7 @@ impl ElfFile {
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic_symbol_list`].
-    pub fn imports(&self) -> Result<Vec<DynamicSymbol>> {
+    pub fn imports(&self) -> Result<Vec<NamedSymbol>> {
         Linker::load(self)?.imports()
     }
 
@@ -321,7 +352,7 @@ impl ElfFile {
     ///
     /// Return an error if a hash table does not parse, or for the same conditions as
     /// [`Self::dynamic_symbol_list`].
-    pub fn lookup_dynamic_symbol(&self, name: &str) -> Result<Option<DynamicSymbol>> {
+    pub fn lookup_dynamic_symbol(&self, name: &str) -> Result<Option<NamedSymbol>> {
         Linker::load(self)?.lookup(name)
     }
 
@@ -363,73 +394,5 @@ impl ElfFile {
     /// Return an error if the segment is outside the file or the table does not parse.
     pub fn eh_frame_hdr(&self) -> Result<Option<EhFrameHdr>> {
         linking::eh_frame_hdr(self)
-    }
-
-    /// Return the first `SHT_SYMTAB` section as a symbol table.
-    ///
-    /// # Errors
-    ///
-    /// Return an error if the section is outside the file or does not parse.
-    pub fn symbols(&self) -> Result<Option<SymbolTable>> {
-        let Some(index) = self.file_section_index(SectionType::SYMTAB) else {
-            return Ok(None);
-        };
-        let header = self.section_header(index)?;
-        SymbolTable::parse_with_entsize(self.section_data(index)?, self.encoding(), header.entsize)
-            .map(Some)
-            .map_err(|error| error.in_structure("SHT_SYMTAB"))
-    }
-
-    /// Return the string table that `sh_link` of the first `SHT_SYMTAB` section gives.
-    ///
-    /// # Errors
-    ///
-    /// Return an error if `sh_link` is not a section index, or if the section is outside the
-    /// file.
-    pub fn symbol_strings(&self) -> Result<Option<StringTable>> {
-        let Some(index) = self.file_section_index(SectionType::SYMTAB) else {
-            return Ok(None);
-        };
-        let link = self.section_header(index)?.link;
-        let link = usize::try_from(link)
-            .map_err(|_| Error::invalid_section(format!("sh_link {link} is out of range")))?;
-        self.section_data(link)
-            .map(|data| Some(StringTable::parse(data)))
-            .map_err(|error| error.in_structure("SHT_SYMTAB sh_link"))
-    }
-
-    /// Parse the `SHT_REL` or `SHT_RELA` section at `index`.
-    ///
-    /// # Errors
-    ///
-    /// - Return [`ErrorKind::InvalidSection`](crate::ErrorKind::InvalidSection) if `index` is
-    ///   out of range, or if the section is not `SHT_REL` or `SHT_RELA`.
-    /// - Return an error if the section is outside the file or does not parse.
-    pub fn section_relocations(&self, index: usize) -> Result<RelocationTable> {
-        let header: SectionHeader = *self.section_header(index)?;
-        let with_addend = match header.section_type {
-            SectionType::RELA => true,
-            SectionType::REL => false,
-            other => {
-                return Err(Error::invalid_section(format!(
-                    "section {index} has the type {other}, not SHT_REL or SHT_RELA"
-                )));
-            }
-        };
-        let encoding = self.encoding();
-        let entsize = if header.entsize == 0 {
-            crate::reloc::Relocation::size(encoding.class, with_addend)
-        } else {
-            usize::try_from(header.entsize).map_err(|_| {
-                Error::invalid_section(format!("sh_entsize {} is too large", header.entsize))
-            })?
-        };
-        RelocationTable::parse_with_entsize(
-            self.section_data(index)?,
-            encoding,
-            self.machine(),
-            with_addend,
-            entsize,
-        )
     }
 }

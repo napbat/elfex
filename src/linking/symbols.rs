@@ -1,57 +1,17 @@
 //! Read the dynamic symbols, their names and their versions.
 
-use super::{AddressSpace, DynamicSymbol, Linker, TableSection, VersionTables, dynamic_string};
+use super::{AddressSpace, Linker, TableSection, VersionTables};
 use crate::dynamic::DynamicTag;
+use crate::header::Machine;
 use crate::prelude::*;
+use crate::section::SHN_XINDEX;
 use crate::strtab::StringTable;
-use crate::symbol::{Symbol, SymbolBinding, SymbolTable, SymbolVisibility};
-use crate::version::{
-    VersionDefinitionTable, VersionMap, VersionRequirementTable, VersymTable, is_hidden,
+use crate::symbol::{
+    NamedSymbol, Symbol, SymbolBinding, SymbolNames, SymbolSectionIndexTable, SymbolTable,
+    SymbolVisibility,
 };
+use crate::version::{VersionDefinitionTable, VersionRequirementTable, VersymTable};
 use crate::{Error, Result};
-
-/// The tables that give the name and the version of a dynamic symbol.
-struct SymbolNames<'t> {
-    /// The dynamic string table.
-    strings: Option<&'t StringTable>,
-    /// The `Elf_Versym` values.
-    versym: Option<&'t VersymTable>,
-    /// The map from the version indexes to the version names.
-    map: &'t VersionMap,
-}
-
-impl SymbolNames<'_> {
-    /// Make the [`DynamicSymbol`] of the symbol at `index`.
-    fn describe(&self, index: usize, symbol: Symbol) -> Result<DynamicSymbol> {
-        let index_u32 = u32::try_from(index).map_err(|_| {
-            Error::invalid_table(format!("the symbol index {index} does not fit in 32 bits"))
-        })?;
-        let name = if symbol.name == 0 {
-            String::new()
-        } else {
-            dynamic_string(self.strings, u64::from(symbol.name))?
-        };
-        let raw = self.versym.and_then(|versym| versym.get(index));
-        let (version, version_file) = match raw.and_then(|raw| self.map.symbol_version(raw)) {
-            Some(version) => (
-                Some(dynamic_string(self.strings, u64::from(version.name))?),
-                version
-                    .file
-                    .map(|file| dynamic_string(self.strings, u64::from(file)))
-                    .transpose()?,
-            ),
-            None => (None, None),
-        };
-        Ok(DynamicSymbol {
-            index: index_u32,
-            name,
-            symbol,
-            version,
-            version_file,
-            hidden: raw.is_some_and(is_hidden),
-        })
-    }
-}
 
 /// Return the name bytes of the symbol at `index`, or `None` if they are not available.
 fn name_bytes<'t>(
@@ -86,10 +46,11 @@ impl<S: AddressSpace> Linker<'_, S> {
     /// `ElfFile` prefers the `SHT_DYNSYM` section. Else the table is at `DT_SYMTAB`. The
     /// count comes from the first source that is available:
     ///
-    /// 1. `nchain` of the `DT_HASH` table.
-    /// 2. The symbol count of the `DT_GNU_HASH` table, or a larger symbol index that a
+    /// 1. `DT_MIPS_SYMTABNO`, for a MIPS object.
+    /// 2. `nchain` of the `DT_HASH` table.
+    /// 3. The symbol count of the `DT_GNU_HASH` table, or a larger symbol index that a
     ///    dynamic relocation refers to.
-    /// 3. The distance from `DT_SYMTAB` to `DT_STRTAB`, if the string table follows.
+    /// 4. The distance from `DT_SYMTAB` to `DT_STRTAB`, if the string table follows.
     pub(crate) fn symbols(&self) -> Result<Option<SymbolTable>> {
         let encoding = self.encoding();
         if let Some(section) = self.space.table_section(TableSection::DynamicSymbols)? {
@@ -123,6 +84,11 @@ impl<S: AddressSpace> Linker<'_, S> {
 
     /// Return the number of dynamic symbols at `symtab`, or `None` if no source gives it.
     fn symbol_count(&self, symtab: u64, entsize: u64) -> Result<Option<u64>> {
+        if self.space.machine() == Machine::MIPS
+            && let Some(count) = self.value(DynamicTag::MIPS_SYMTABNO)
+        {
+            return Ok(Some(count));
+        }
         if let Some(table) = self.sysv_hash()? {
             return Ok(Some(u64::from(table.symbol_count())));
         }
@@ -142,6 +108,46 @@ impl<S: AddressSpace> Linker<'_, S> {
             .pointer(DynamicTag::STRTAB)
             .filter(|strtab| *strtab > symtab)
             .map(|strtab| (strtab - symtab) / entsize))
+    }
+
+    /// Return the extended section indices of the dynamic symbols, for a table with `count`
+    /// symbols.
+    ///
+    /// `ElfFile` prefers the `SHT_SYMTAB_SHNDX` section that links to the `SHT_DYNSYM`
+    /// section. Else the table is at `DT_SYMTAB_SHNDX`, with one entry for each symbol.
+    fn symbol_indices(&self, count: usize) -> Result<Option<SymbolSectionIndexTable>> {
+        let encoding = self.encoding();
+        if let Some(section) = self
+            .space
+            .table_section(TableSection::DynamicSymbolIndices)?
+        {
+            return SymbolSectionIndexTable::parse(section.data, encoding)
+                .map(Some)
+                .map_err(|error| error.in_structure("SHT_SYMTAB_SHNDX"));
+        }
+        let Some(address) = self.pointer(DynamicTag::SYMTAB_SHNDX) else {
+            return Ok(None);
+        };
+        let size = u64::try_from(count)
+            .ok()
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| {
+                Error::invalid_table(format!("the symbol count {count} is too large"))
+                    .in_structure("DT_SYMTAB_SHNDX")
+            })?;
+        let bytes = self.bytes(address, size, "DT_SYMTAB_SHNDX")?;
+        SymbolSectionIndexTable::parse(bytes, encoding)
+            .map(Some)
+            .map_err(|error| error.in_structure("DT_SYMTAB_SHNDX").at_address(address))
+    }
+
+    /// Return the extended section indices of `symbols`, if a symbol needs them.
+    fn indices_for(&self, symbols: &SymbolTable) -> Result<Option<SymbolSectionIndexTable>> {
+        if symbols.iter().any(|symbol| symbol.shndx == SHN_XINDEX) {
+            self.symbol_indices(symbols.len())
+        } else {
+            Ok(None)
+        }
     }
 
     /// Return the version tables. `symbol_count` is the number of dynamic symbols, if the
@@ -222,17 +228,20 @@ impl<S: AddressSpace> Linker<'_, S> {
     }
 
     /// Return all dynamic symbols except the null symbol at index 0.
-    pub(crate) fn symbol_list(&self) -> Result<Vec<DynamicSymbol>> {
+    pub(crate) fn symbol_list(&self) -> Result<Vec<NamedSymbol>> {
         let Some(symbols) = self.symbols()? else {
             return Ok(Vec::new());
         };
         let strings = self.strings()?;
         let versions = self.versions(Some(symbols.len()))?;
         let map = versions.map();
+        let indices = self.indices_for(&symbols)?;
         let names = SymbolNames {
             strings: strings.as_ref(),
+            structure: "DT_STRTAB",
+            indices: indices.as_ref(),
             versym: versions.versym.as_ref(),
-            map: &map,
+            map: Some(&map),
         };
         symbols
             .iter()
@@ -243,14 +252,14 @@ impl<S: AddressSpace> Linker<'_, S> {
     }
 
     /// Return the dynamic symbols that the object exports.
-    pub(crate) fn exports(&self) -> Result<Vec<DynamicSymbol>> {
+    pub(crate) fn exports(&self) -> Result<Vec<NamedSymbol>> {
         let mut list = self.symbol_list()?;
         list.retain(|symbol| is_export(&symbol.symbol));
         Ok(list)
     }
 
     /// Return the undefined dynamic symbols: the symbols that the object imports.
-    pub(crate) fn imports(&self) -> Result<Vec<DynamicSymbol>> {
+    pub(crate) fn imports(&self) -> Result<Vec<NamedSymbol>> {
         let mut list = self.symbol_list()?;
         list.retain(|symbol| symbol.symbol.is_undefined());
         Ok(list)
@@ -258,7 +267,7 @@ impl<S: AddressSpace> Linker<'_, S> {
 
     /// Find the dynamic symbol with the name `name`: with the GNU hash table, else with the
     /// System V hash table, else with a linear search.
-    pub(crate) fn lookup(&self, name: &str) -> Result<Option<DynamicSymbol>> {
+    pub(crate) fn lookup(&self, name: &str) -> Result<Option<NamedSymbol>> {
         let Some(symbols) = self.symbols()? else {
             return Ok(None);
         };
@@ -282,10 +291,17 @@ impl<S: AddressSpace> Linker<'_, S> {
         };
         let versions = self.versions(Some(symbols.len()))?;
         let map = versions.map();
+        let indices = if symbol.shndx == SHN_XINDEX {
+            self.symbol_indices(symbols.len())?
+        } else {
+            None
+        };
         let names = SymbolNames {
             strings: strings.as_ref(),
+            structure: "DT_STRTAB",
+            indices: indices.as_ref(),
             versym: versions.versym.as_ref(),
-            map: &map,
+            map: Some(&map),
         };
         names.describe(index, symbol).map(Some)
     }

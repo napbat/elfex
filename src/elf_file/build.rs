@@ -1,6 +1,7 @@
 //! Serialize the headers of an [`ElfFile`] into a copy of the file bytes.
 
 use super::{ElfFile, align_up, overlaps, resolved_phnum, resolved_shnum, table_range};
+use crate::elf_image::ElfImage;
 use crate::header::FileHeader;
 use crate::prelude::*;
 use crate::program::{PN_XNUM, ProgramHeader, SegmentType};
@@ -127,6 +128,20 @@ impl ElfFile {
     pub fn build(&self) -> Vec<u8> {
         self.try_build()
             .expect("ElfFile build failed: use try_build() to handle invalid input")
+    }
+
+    /// Return the loader view of the file as it is now: an [`ElfImage`] of the bytes that
+    /// [`Self::try_build`] gives.
+    ///
+    /// The build runs first, so the image includes the header edits that are not in the data
+    /// buffer yet.
+    ///
+    /// # Errors
+    ///
+    /// Return an error from [`Self::try_build`], or an error from [`ElfImage::parse`] if the
+    /// image does not parse.
+    pub fn to_image(&self) -> Result<ElfImage> {
+        ElfImage::parse(&self.try_build()?)
     }
 
     /// Build the raw file and write it to a `nostdio` stream.

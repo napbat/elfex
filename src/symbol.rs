@@ -7,12 +7,17 @@
 //! - Use [`SymbolSectionIndexTable`] to read the extended section indices of an
 //!   `SHT_SYMTAB_SHNDX` section.
 //! - Use [`SymbolTableBuilder`] to make a new symbol table and its string table.
+//! - [`NamedSymbol`] is a symbol with its name, its section and its version. The symbol
+//!   accessors of `ElfFile` and `ElfImage` return it.
 
 mod builder;
+mod named;
 #[cfg(test)]
 mod tests;
 
 pub use builder::{BuiltSymbolTable, NewSymbol, SymbolTableBuilder};
+pub use named::NamedSymbol;
+pub(crate) use named::{SymbolNames, table_string};
 
 use crate::endian::{ByteReader, Class, Encoding};
 use crate::prelude::*;

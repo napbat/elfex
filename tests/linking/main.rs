@@ -7,8 +7,9 @@
 mod fixture;
 
 use elfex::{
-    DynamicRelocations, DynamicSymbol, DynamicTable, DynamicTag, EhFrameHdr, ElfFile, ElfImage,
-    GnuHashTable, Note, Result, StringTable, SymbolTable, SysvHashTable, VersionTables,
+    AuxvEntry, DynamicRelocations, DynamicTable, DynamicTag, EhFrameHdr, ElfFile, ElfImage,
+    FileMapping, GnuHashTable, NamedSymbol, Note, Result, StringTable, SymbolTable, SysvHashTable,
+    VersionTables,
 };
 use fixture::{BUILD_ID, DEFINED, ELF32, ELF64, Fixture, IMPORTS, Spec};
 
@@ -46,14 +47,16 @@ linking_trait! {
     interpreter() -> Option<String>;
     notes() -> Vec<Note>;
     build_id() -> Option<Vec<u8>>;
+    core_file_mappings() -> Option<(u64, Vec<FileMapping>)>;
+    auxv() -> Option<Vec<AuxvEntry>>;
     dynamic_relocations() -> DynamicRelocations;
     sysv_hash_table() -> Option<SysvHashTable>;
     gnu_hash_table() -> Option<GnuHashTable>;
     version_tables() -> VersionTables;
-    dynamic_symbol_list() -> Vec<DynamicSymbol>;
-    exports() -> Vec<DynamicSymbol>;
-    imports() -> Vec<DynamicSymbol>;
-    lookup_dynamic_symbol(name: &str) -> Option<DynamicSymbol>;
+    dynamic_symbol_list() -> Vec<NamedSymbol>;
+    exports() -> Vec<NamedSymbol>;
+    imports() -> Vec<NamedSymbol>;
+    lookup_dynamic_symbol(name: &str) -> Option<NamedSymbol>;
     init_array() -> Vec<u64>;
     fini_array() -> Vec<u64>;
     preinit_array() -> Vec<u64>;
@@ -64,7 +67,7 @@ linking_trait! {
 type Versioned = (String, Option<String>, Option<String>, bool);
 
 /// Return the name and version values of `symbols`, sorted by name.
-fn versioned(symbols: &[DynamicSymbol]) -> Vec<Versioned> {
+fn versioned(symbols: &[NamedSymbol]) -> Vec<Versioned> {
     let mut list: Vec<Versioned> = symbols
         .iter()
         .map(|symbol| {
@@ -214,6 +217,8 @@ fn check_linking(view: &impl Linking, fixture: &Fixture, init_array: u64) {
 
     assert_eq!(view.build_id().unwrap(), Some(BUILD_ID.to_vec()));
     assert_eq!(view.notes().unwrap().len(), 1);
+    assert_eq!(view.core_file_mappings().unwrap(), None);
+    assert_eq!(view.auxv().unwrap(), None);
     assert_eq!(view.init_array().unwrap(), [init_array]);
     assert_eq!(view.fini_array().unwrap(), Vec::<u64>::new());
     assert_eq!(view.preinit_array().unwrap(), Vec::<u64>::new());
@@ -373,7 +378,7 @@ fn check_empty(view: &impl Linking) {
         DynamicRelocations::default()
     );
     assert_eq!(view.version_tables().unwrap(), VersionTables::default());
-    assert_eq!(view.exports().unwrap(), Vec::<DynamicSymbol>::new());
+    assert_eq!(view.exports().unwrap(), Vec::<NamedSymbol>::new());
     assert_eq!(view.lookup_dynamic_symbol("main").unwrap(), None);
     assert_eq!(view.build_id().unwrap(), None);
     assert_eq!(view.init_array().unwrap(), Vec::<u64>::new());

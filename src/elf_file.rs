@@ -10,7 +10,16 @@
 //!
 //! The edits change the data buffer and the headers. [`ElfFile::try_build`] serializes the
 //! headers into a copy of the data buffer. When nothing changes, the build returns the input
-//! bytes.
+//! bytes. [`ElfFile::to_image`] gives the loader view ([`ElfImage`](crate::ElfImage)) of
+//! the current file.
+//!
+//! The section accessors read the tables of a relocatable file or of a linked file:
+//!
+//! - [`ElfFile::symbol_list`] and [`ElfFile::lookup_symbol`] give the static symbols with
+//!   their names and sections.
+//! - [`ElfFile::relocation_sections`] gives all `SHT_REL` and `SHT_RELA` sections.
+//! - [`ElfFile::section_groups`] gives all `SHT_GROUP` sections, for example COMDAT groups.
+//! - [`ElfFile::section_data_by_name`] gives the bytes of a named section.
 //!
 //! # Example
 //!
@@ -47,10 +56,12 @@ use std::path::Path;
 mod build;
 mod edit;
 mod linking;
+mod tables;
 #[cfg(test)]
 mod tests;
 
 pub use edit::NewSection;
+pub use tables::{RelocationSection, SectionGroup};
 
 /// A raw ELF file that keeps all bytes.
 ///
@@ -68,7 +79,8 @@ pub struct ElfFile {
 }
 
 /// A section of an [`ElfFile`]: its index, name, header and file bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct SectionRef<'a> {
     /// The index of the section in the section header table.
     pub index: usize,

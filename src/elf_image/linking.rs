@@ -12,14 +12,13 @@ use crate::endian::Encoding;
 use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::header::Machine;
 use crate::linking::{
-    self, AddressSpace, DynamicRelocations, DynamicSymbol, Linker, NoteSource, SegmentBytes,
-    VersionTables,
+    self, AddressSpace, DynamicRelocations, Linker, NoteSource, SegmentBytes, VersionTables,
 };
-use crate::note::Note;
+use crate::note::{AuxvEntry, FileMapping, Note};
 use crate::prelude::*;
 use crate::program::SegmentType;
 use crate::strtab::StringTable;
-use crate::symbol::SymbolTable;
+use crate::symbol::{NamedSymbol, SymbolTable};
 
 impl AddressSpace for ElfImage {
     fn encoding(&self) -> Encoding {
@@ -134,10 +133,10 @@ impl ElfImage {
 
     /// Return the dynamic symbol table at `DT_SYMTAB`.
     ///
-    /// The symbol count comes from `DT_HASH`, else from `DT_GNU_HASH` and the dynamic
-    /// relocations, else from the distance between `DT_SYMTAB` and `DT_STRTAB`. Return `None`
-    /// if no source gives the count. The function translates the `d_ptr` values with
-    /// [`Self::resolve_pointer`].
+    /// The symbol count comes from `DT_MIPS_SYMTABNO` (MIPS only), else from `DT_HASH`, else
+    /// from `DT_GNU_HASH` and the dynamic relocations, else from the distance between
+    /// `DT_SYMTAB` and `DT_STRTAB`. Return `None` if no source gives the count. The function
+    /// translates the `d_ptr` values with [`Self::resolve_pointer`].
     ///
     /// # Errors
     ///
@@ -206,6 +205,32 @@ impl ElfImage {
         linking::build_id(self)
     }
 
+    /// Return the page size and the mapped files of the first `NT_FILE` note (owner `CORE`)
+    /// of a core file.
+    ///
+    /// Return `None` if the image has no such note.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::notes`], or if the descriptor
+    /// does not parse (see [`parse_nt_file`](crate::note::parse_nt_file)).
+    pub fn core_file_mappings(&self) -> Result<Option<(u64, Vec<FileMapping>)>> {
+        linking::core_file_mappings(self)
+    }
+
+    /// Return the auxiliary vector of the first `NT_AUXV` note (owner `CORE`) of a core
+    /// file, without the `AT_NULL` entry.
+    ///
+    /// Return `None` if the image has no such note.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::notes`], or if the descriptor
+    /// does not parse (see [`parse_auxv`](crate::note::parse_auxv)).
+    pub fn auxv(&self) -> Result<Option<Vec<AuxvEntry>>> {
+        linking::auxv(self)
+    }
+
     /// Return the relocation tables that the dynamic table names: `DT_RELA`, `DT_REL`,
     /// `DT_JMPREL` and `DT_RELR`.
     ///
@@ -251,13 +276,14 @@ impl ElfImage {
         Linker::load(self)?.versions(None)
     }
 
-    /// Return all dynamic symbols except the null symbol, with their names and versions.
+    /// Return all dynamic symbols except the null symbol, with their names, sections and
+    /// versions.
     ///
     /// # Errors
     ///
     /// Return an error if the dynamic symbol table, the dynamic string table or a version
     /// table does not parse, or if a name offset is outside the string table.
-    pub fn dynamic_symbol_list(&self) -> Result<Vec<DynamicSymbol>> {
+    pub fn dynamic_symbol_list(&self) -> Result<Vec<NamedSymbol>> {
         Linker::load(self)?.symbol_list()
     }
 
@@ -268,7 +294,7 @@ impl ElfImage {
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic_symbol_list`].
-    pub fn exports(&self) -> Result<Vec<DynamicSymbol>> {
+    pub fn exports(&self) -> Result<Vec<NamedSymbol>> {
         Linker::load(self)?.exports()
     }
 
@@ -278,7 +304,7 @@ impl ElfImage {
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic_symbol_list`].
-    pub fn imports(&self) -> Result<Vec<DynamicSymbol>> {
+    pub fn imports(&self) -> Result<Vec<NamedSymbol>> {
         Linker::load(self)?.imports()
     }
 
@@ -291,7 +317,7 @@ impl ElfImage {
     ///
     /// Return an error if a hash table does not parse, or for the same conditions as
     /// [`Self::dynamic_symbol_list`].
-    pub fn lookup_dynamic_symbol(&self, name: &str) -> Result<Option<DynamicSymbol>> {
+    pub fn lookup_dynamic_symbol(&self, name: &str) -> Result<Option<NamedSymbol>> {
         Linker::load(self)?.lookup(name)
     }
 

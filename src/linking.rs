@@ -4,7 +4,11 @@
 //! the dynamic string and symbol tables, the hash tables, the version tables, the relocations
 //! and the initialization arrays. `ElfFile` and `ElfImage` have the same accessors for these
 //! tables, for example `dynamic_symbols()`, `needed_libraries()` and `dynamic_relocations()`.
-//! This module holds the result types of these accessors.
+//! This module holds the result types of these accessors. The symbol accessors return
+//! [`NamedSymbol`](crate::NamedSymbol).
+//!
+//! The two types also read the notes of a core file: `core_file_mappings()` (`NT_FILE`) and
+//! `auxv()` (`NT_AUXV`).
 //!
 //! # Table sources
 //!
@@ -28,44 +32,23 @@ use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
 use crate::header::Machine;
-use crate::note::{ELF_NOTE_GNU, NT_GNU_BUILD_ID, Note, NoteTable};
+use crate::note::{
+    AuxvEntry, ELF_NOTE_CORE, ELF_NOTE_GNU, FileMapping, NT_AUXV, NT_FILE, NT_GNU_BUILD_ID, Note,
+    NoteTable, parse_auxv, parse_nt_file,
+};
 use crate::prelude::*;
 use crate::program::{ProgramHeader, SegmentType};
 use crate::reloc::{Relocation, RelocationTable, RelrTable};
 use crate::strtab::StringTable;
-use crate::symbol::Symbol;
 use crate::version::{VersionDefinitionTable, VersionMap, VersionRequirementTable, VersymTable};
 use crate::{Error, Result};
-
-/// A dynamic symbol with its name and its version.
-///
-/// The accessors `dynamic_symbol_list`, `exports`, `imports` and `lookup_dynamic_symbol` of
-/// `ElfFile` and `ElfImage` return this type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynamicSymbol {
-    /// The index of the symbol in the dynamic symbol table.
-    pub index: u32,
-    /// The symbol name from the dynamic string table, as lossy UTF-8.
-    pub name: String,
-    /// The symbol table entry (`Elf32_Sym` or `Elf64_Sym`).
-    pub symbol: Symbol,
-    /// The version name from the `Elf_Versym` value and the version definitions or
-    /// requirements. `None` if the symbol has no version or the base version
-    /// (`VER_NDX_LOCAL` or `VER_NDX_GLOBAL`).
-    pub version: Option<String>,
-    /// The file name (`vn_file`) of the version requirement: the library that defines the
-    /// symbol. `None` for a version that the file itself defines.
-    pub version_file: Option<String>,
-    /// `true` if the `Elf_Versym` value has the `VERSYM_HIDDEN` bit: the version is not the
-    /// default version of the symbol.
-    pub hidden: bool,
-}
 
 /// The relocation tables that the dynamic table names.
 ///
 /// Each field is `None` if the dynamic table does not have its address tag. The relocation
 /// offsets (`r_offset`) are virtual addresses.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DynamicRelocations {
     /// The `Elf32_Rela` or `Elf64_Rela` entries at `DT_RELA` (`DT_RELASZ`, `DT_RELAENT`).
     pub rela: Option<RelocationTable>,
@@ -91,6 +74,7 @@ impl DynamicRelocations {
 
 /// The GNU symbol version tables of the dynamic symbols.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VersionTables {
     /// The `Elf_Versym` values (`.gnu.version`, `DT_VERSYM`).
     pub versym: Option<VersymTable>,
@@ -150,6 +134,8 @@ pub(crate) enum TableSection {
     Verdef,
     /// The `SHT_GNU_verneed` section.
     Verneed,
+    /// The `SHT_SYMTAB_SHNDX` section that links to the `SHT_DYNSYM` section.
+    DynamicSymbolIndices,
 }
 
 /// The view of an `ElfFile` or an `ElfImage` that the linking accessors use.
@@ -210,6 +196,27 @@ pub(crate) fn build_id<S: AddressSpace>(space: &S) -> Result<Option<Vec<u8>>> {
         .into_iter()
         .find(|note| note.is(ELF_NOTE_GNU, NT_GNU_BUILD_ID))
         .map(|note| note.desc))
+}
+
+/// Return the page size and the mapped files of the first `NT_FILE` note (owner `CORE`) of
+/// `space`.
+pub(crate) fn core_file_mappings<S: AddressSpace>(
+    space: &S,
+) -> Result<Option<(u64, Vec<FileMapping>)>> {
+    notes(space)?
+        .iter()
+        .find(|note| note.is(ELF_NOTE_CORE, NT_FILE))
+        .map(|note| parse_nt_file(&note.desc, space.encoding()))
+        .transpose()
+}
+
+/// Return the entries of the first `NT_AUXV` note (owner `CORE`) of `space`.
+pub(crate) fn auxv<S: AddressSpace>(space: &S) -> Result<Option<Vec<AuxvEntry>>> {
+    notes(space)?
+        .iter()
+        .find(|note| note.is(ELF_NOTE_CORE, NT_AUXV))
+        .map(|note| parse_auxv(&note.desc, space.encoding()))
+        .transpose()
 }
 
 /// Parse the `.eh_frame_hdr` data of the first `PT_GNU_EH_FRAME` segment of `space`.
