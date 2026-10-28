@@ -1,4 +1,11 @@
 //! The [`ReadAt`] trait and positional readers for ELF data sources.
+//!
+//! - [`SliceReader`] and [`VecReader`] read bytes in memory.
+//! - [`SeekReader`] reads a `nostdio::Read + Seek` stream. With the `std` feature,
+//!   `FileReader` is a `SeekReader` for a file on disk.
+//! - [`BaseAddressReader`] reads a module in the memory of the current process.
+//!
+//! Implement [`ReadAt`] for a different source, for example the memory of a remote process.
 
 use crate::prelude::*;
 use crate::{Error, Result};
