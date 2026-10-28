@@ -12,6 +12,7 @@ mod notes;
 mod symbols;
 
 use elfex::ElfFile;
+use std::io::{ErrorKind, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -32,12 +33,32 @@ options:
   -a, --all              print all parts
       --help             print this help";
 
+/// A failure of a part: a library error or an output error.
+enum Failure {
+    /// The library cannot read the part.
+    Elf(elfex::Error),
+    /// The tool cannot write the output.
+    Output(std::io::Error),
+}
+
+impl From<elfex::Error> for Failure {
+    fn from(error: elfex::Error) -> Self {
+        Self::Elf(error)
+    }
+}
+
+impl From<std::io::Error> for Failure {
+    fn from(error: std::io::Error) -> Self {
+        Self::Output(error)
+    }
+}
+
 /// A part of the output: the short flag, the long flags, the name and the print function.
 struct Part {
     short: char,
     long: &'static [&'static str],
     name: &'static str,
-    print: fn(&ElfFile) -> elfex::Result<()>,
+    print: fn(&ElfFile, &mut dyn Write) -> Result<(), Failure>,
 }
 
 /// The parts, in output order.
@@ -46,28 +67,19 @@ const PARTS: [Part; 9] = [
         short: 'h',
         long: &["file-header"],
         name: "file header",
-        print: |file| {
-            headers::print_file_header(file);
-            Ok(())
-        },
+        print: headers::print_file_header,
     },
     Part {
         short: 'l',
         long: &["segments", "program-headers"],
         name: "program headers",
-        print: |file| {
-            headers::print_program_headers(file);
-            Ok(())
-        },
+        print: headers::print_program_headers,
     },
     Part {
         short: 'S',
         long: &["sections", "section-headers"],
         name: "section headers",
-        print: |file| {
-            headers::print_section_headers(file);
-            Ok(())
-        },
+        print: headers::print_section_headers,
     },
     Part {
         short: 'd',
@@ -103,10 +115,7 @@ const PARTS: [Part; 9] = [
         short: 'c',
         long: &["check"],
         name: "validation",
-        print: |file| {
-            notes::print_validation(file);
-            Ok(())
-        },
+        print: notes::print_validation,
     },
 ];
 
@@ -172,28 +181,54 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
 }
 
 /// Print the selected parts. Print an error for each part that fails, and continue with the
-/// next part, as `readelf` does. Return `false` if a part failed.
-fn dump(path: &str, file: &ElfFile, selection: &Selection) -> bool {
+/// next part, as `readelf` does. Stop at the first output error. Return the exit code.
+fn dump(path: &str, file: &ElfFile, selection: &Selection, out: &mut dyn Write) -> ExitCode {
     let mut ok = true;
     for (part, _) in PARTS
         .iter()
         .zip(selection)
         .filter(|(_, selected)| **selected)
     {
-        if let Err(error) = (part.print)(file) {
-            eprintln!("elfdump: {path}: {}: {error}", part.name);
-            ok = false;
+        match (part.print)(file, out) {
+            Ok(()) => {}
+            Err(Failure::Elf(error)) => {
+                eprintln!("elfdump: {path}: {}: {error}", part.name);
+                ok = false;
+            }
+            Err(Failure::Output(error)) => return output_failure(&error, ok),
         }
     }
-    ok
+    match out.flush() {
+        Ok(()) if ok => ExitCode::SUCCESS,
+        Ok(()) => ExitCode::FAILURE,
+        Err(error) => output_failure(&error, ok),
+    }
+}
+
+/// Return the exit code for an output error. Exit quietly if the reader closed the pipe.
+/// For other errors, print a message.
+fn output_failure(error: &std::io::Error, ok: bool) -> ExitCode {
+    if error.kind() != ErrorKind::BrokenPipe {
+        eprintln!("elfdump: cannot write the output: {error}");
+        return ExitCode::FAILURE;
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 fn main() -> ExitCode {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     let (selection, path) = match parse_args(std::env::args().skip(1)) {
         Ok(Command::Dump { selection, path }) => (selection, path),
         Ok(Command::Help) => {
-            println!("{USAGE}");
-            return ExitCode::SUCCESS;
+            return match writeln!(out, "{USAGE}").and_then(|()| out.flush()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => output_failure(&error, true),
+            };
         }
         Err(message) => {
             eprintln!("elfdump: {message}\n\n{USAGE}");
@@ -201,8 +236,7 @@ fn main() -> ExitCode {
         }
     };
     match ElfFile::from_file(&path) {
-        Ok(file) if dump(&path, &file, &selection) => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
+        Ok(file) => dump(&path, &file, &selection, &mut out),
         Err(error) => {
             eprintln!("elfdump: {path}: {error}");
             ExitCode::FAILURE

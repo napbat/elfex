@@ -1,8 +1,10 @@
 //! Print the symbol tables and the relocation sections.
 
+use crate::Failure;
 use crate::headers::address_width;
 use elfex::section::{SHN_ABS, SHN_COMMON, SHN_UNDEF};
 use elfex::{ElfFile, NamedSymbol, Relocation, SectionType};
+use std::io::Write;
 
 fn section_text(symbol: &NamedSymbol) -> String {
     match symbol.symbol.shndx {
@@ -24,10 +26,16 @@ fn symbol_name(symbol: &NamedSymbol) -> String {
     }
 }
 
-fn print_symbol_list(file: &ElfFile, title: &str, symbols: &[NamedSymbol]) {
+fn print_symbol_list(
+    file: &ElfFile,
+    out: &mut dyn Write,
+    title: &str,
+    symbols: &[NamedSymbol],
+) -> Result<(), Failure> {
     let width = address_width(file);
-    println!("{title} ({} entries):", symbols.len());
-    println!(
+    writeln!(out, "{title} ({} entries):", symbols.len())?;
+    writeln!(
+        out,
         "  {:>6} {:<w$} {:>6} {:<12} {:<12} {:<12} {:>5} Name",
         "Num",
         "Value",
@@ -37,10 +45,11 @@ fn print_symbol_list(file: &ElfFile, title: &str, symbols: &[NamedSymbol]) {
         "Vis",
         "Ndx",
         w = width + 2
-    );
+    )?;
     for symbol in symbols {
         let entry = &symbol.symbol;
-        println!(
+        writeln!(
+            out,
             "  {:>6} {:#0w$x} {:>6} {:<12} {:<12} {:<12} {:>5} {}",
             symbol.index,
             entry.value,
@@ -51,25 +60,26 @@ fn print_symbol_list(file: &ElfFile, title: &str, symbols: &[NamedSymbol]) {
             section_text(symbol),
             symbol_name(symbol),
             w = width + 2
-        );
+        )?;
     }
-    println!();
+    writeln!(out)?;
+    Ok(())
 }
 
-pub fn print_symbols(file: &ElfFile) -> elfex::Result<()> {
+pub fn print_symbols(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let dynamic = file.dynamic_symbol_list()?;
     if dynamic.is_empty() {
-        println!("The file has no dynamic symbols.");
-        println!();
+        writeln!(out, "The file has no dynamic symbols.")?;
+        writeln!(out)?;
     } else {
-        print_symbol_list(file, "Dynamic symbols", &dynamic);
+        print_symbol_list(file, out, "Dynamic symbols", &dynamic)?;
     }
     let symbols = file.symbol_list()?;
     if symbols.is_empty() {
-        println!("The file has no static symbol table.");
-        println!();
+        writeln!(out, "The file has no static symbol table.")?;
+        writeln!(out)?;
     } else {
-        print_symbol_list(file, "Static symbols (.symtab)", &symbols);
+        print_symbol_list(file, out, "Static symbols (.symtab)", &symbols)?;
     }
     Ok(())
 }
@@ -106,10 +116,10 @@ fn relocation_line(file: &ElfFile, relocation: &Relocation, symbols: &[NamedSymb
     )
 }
 
-pub fn print_relocations(file: &ElfFile) -> elfex::Result<()> {
+pub fn print_relocations(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let sections = file.relocation_sections()?;
     if sections.is_empty() {
-        println!("The file has no relocation sections.");
+        writeln!(out, "The file has no relocation sections.")?;
     }
     for section in &sections {
         let symbols = symbols_of(file, section.symbol_table)?;
@@ -117,19 +127,20 @@ pub fn print_relocations(file: &ElfFile) -> elfex::Result<()> {
             .target_section
             .and_then(|index| file.section(index))
             .map_or_else(String::new, |target| format!(" for {}", target.name));
-        println!(
+        writeln!(
+            out,
             "Relocation section {}{target} ({} entries):",
             section.name,
             section.table.relocations.len()
-        );
+        )?;
         for relocation in &section.table.relocations {
-            println!("{}", relocation_line(file, relocation, &symbols));
+            writeln!(out, "{}", relocation_line(file, relocation, &symbols))?;
         }
-        println!();
+        writeln!(out)?;
     }
     if let Some(relr) = file.dynamic_relocations()?.relr {
-        println!("RELR relative relocations: {} addresses", relr.len());
-        println!();
+        writeln!(out, "RELR relative relocations: {} addresses", relr.len())?;
+        writeln!(out)?;
     }
     Ok(())
 }

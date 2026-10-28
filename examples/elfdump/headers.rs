@@ -1,18 +1,20 @@
 //! Print the file header, the program headers and the section headers.
 
+use crate::Failure;
 use elfex::program::{PF_R, PF_W, PF_X};
 use elfex::section::{
     SHF_ALLOC, SHF_COMPRESSED, SHF_EXCLUDE, SHF_EXECINSTR, SHF_GROUP, SHF_INFO_LINK,
     SHF_LINK_ORDER, SHF_MERGE, SHF_STRINGS, SHF_TLS, SHF_WRITE,
 };
 use elfex::{Class, ElfFile, Endian};
+use std::io::Write;
 
 /// Return the number of hexadecimal digits of an address in the file.
 pub fn address_width(file: &ElfFile) -> usize {
     file.encoding().addr_size() * 2
 }
 
-pub fn print_file_header(file: &ElfFile) {
+pub fn print_file_header(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let header = file.header();
     let ident = &header.ident;
     let class = match ident.class {
@@ -23,24 +25,28 @@ pub fn print_file_header(file: &ElfFile) {
         Endian::Little => "little-endian",
         Endian::Big => "big-endian",
     };
-    println!("File header:");
-    println!("  Class:                  {class}");
-    println!("  Data:                   {endian}");
-    println!(
+    writeln!(out, "File header:")?;
+    writeln!(out, "  Class:                  {class}")?;
+    writeln!(out, "  Data:                   {endian}")?;
+    writeln!(
+        out,
         "  OS/ABI:                 {} (ABI version {})",
         ident.os_abi, ident.abi_version
-    );
-    println!("  Type:                   {}", header.file_type);
-    println!("  Machine:                {}", header.machine);
-    println!("  Version:                {}", header.version);
-    println!("  Entry point:            {:#x}", header.entry);
-    println!("  Program headers offset: {:#x}", header.phoff);
-    println!("  Section headers offset: {:#x}", header.shoff);
-    println!("  Flags:                  {:#x}", header.flags);
-    println!("  Program headers:        {}", file.program_headers().len());
-    println!("  Section headers:        {}", file.section_headers().len());
-    println!("  Section name index:     {}", header.shstrndx);
-    println!();
+    )?;
+    writeln!(out, "  Type:                   {}", header.file_type)?;
+    writeln!(out, "  Machine:                {}", header.machine)?;
+    writeln!(out, "  Version:                {}", header.version)?;
+    writeln!(out, "  Entry point:            {:#x}", header.entry)?;
+    writeln!(out, "  Program headers offset: {:#x}", header.phoff)?;
+    writeln!(out, "  Section headers offset: {:#x}", header.shoff)?;
+    writeln!(out, "  Flags:                  {:#x}", header.flags)?;
+    let segments = file.program_headers().len();
+    writeln!(out, "  Program headers:        {segments}")?;
+    let sections = file.section_headers().len();
+    writeln!(out, "  Section headers:        {sections}")?;
+    writeln!(out, "  Section name index:     {}", header.shstrndx)?;
+    writeln!(out)?;
+    Ok(())
 }
 
 fn segment_flags(flags: u32) -> String {
@@ -50,10 +56,11 @@ fn segment_flags(flags: u32) -> String {
         .collect()
 }
 
-pub fn print_program_headers(file: &ElfFile) {
+pub fn print_program_headers(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let width = address_width(file);
-    println!("Program headers ({}):", file.program_headers().len());
-    println!(
+    writeln!(out, "Program headers ({}):", file.program_headers().len())?;
+    writeln!(
+        out,
         "  {:<16} {:<w$} {:<w$} {:<w$} {:<w$} Flg Align",
         "Type",
         "Offset",
@@ -61,9 +68,10 @@ pub fn print_program_headers(file: &ElfFile) {
         "FileSiz",
         "MemSiz",
         w = width + 2
-    );
+    )?;
     for header in file.program_headers() {
-        println!(
+        writeln!(
+            out,
             "  {:<16} {:#0w$x} {:#0w$x} {:#0w$x} {:#0w$x} {} {:#x}",
             header.segment_type.to_string(),
             header.offset,
@@ -73,14 +81,15 @@ pub fn print_program_headers(file: &ElfFile) {
             segment_flags(header.flags),
             header.align,
             w = width + 2
-        );
+        )?;
     }
     match file.interpreter() {
-        Ok(Some(path)) => println!("  Program interpreter: {path}"),
+        Ok(Some(path)) => writeln!(out, "  Program interpreter: {path}")?,
         Ok(None) => {}
-        Err(error) => println!("  Program interpreter: <{error}>"),
+        Err(error) => writeln!(out, "  Program interpreter: <{error}>")?,
     }
-    println!();
+    writeln!(out)?;
+    Ok(())
 }
 
 fn section_flags(flags: u64) -> String {
@@ -104,10 +113,11 @@ fn section_flags(flags: u64) -> String {
         .collect()
 }
 
-pub fn print_section_headers(file: &ElfFile) {
+pub fn print_section_headers(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let width = address_width(file);
-    println!("Section headers ({}):", file.section_headers().len());
-    println!(
+    writeln!(out, "Section headers ({}):", file.section_headers().len())?;
+    writeln!(
+        out,
         "  [Nr] {:<20} {:<16} {:<w$} {:<10} {:<10} {:<5} Lk  Inf Al",
         "Name",
         "Type",
@@ -116,10 +126,11 @@ pub fn print_section_headers(file: &ElfFile) {
         "Size",
         "Flg",
         w = width + 2
-    );
+    )?;
     for section in file.sections() {
         let header = section.header;
-        println!(
+        writeln!(
+            out,
             "  [{:>2}] {:<20} {:<16} {:#0w$x} {:#010x} {:#010x} {:<5} {:<3} {:<3} {}",
             section.index,
             section.name,
@@ -132,9 +143,16 @@ pub fn print_section_headers(file: &ElfFile) {
             header.info,
             header.addralign,
             w = width + 2
-        );
+        )?;
     }
-    println!("  Flags: W (write), A (alloc), X (execute), M (merge), S (strings), I (info link),");
-    println!("  L (link order), G (group), T (TLS), C (compressed), E (exclude)");
-    println!();
+    writeln!(
+        out,
+        "  Flags: W (write), A (alloc), X (execute), M (merge), S (strings), I (info link),"
+    )?;
+    writeln!(
+        out,
+        "  L (link order), G (group), T (TLS), C (compressed), E (exclude)"
+    )?;
+    writeln!(out)?;
+    Ok(())
 }

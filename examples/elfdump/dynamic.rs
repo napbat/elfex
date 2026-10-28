@@ -1,8 +1,10 @@
 //! Print the dynamic table and the symbol version tables.
 
+use crate::Failure;
 use elfex::version::VER_FLG_BASE;
 use elfex::{DynamicTag, ElfFile, StringTable};
 use std::borrow::Cow;
+use std::io::Write;
 
 /// Return the string at `offset`, or a placeholder if the string table cannot give it.
 pub fn string_at(strings: Option<&StringTable>, offset: u32) -> String {
@@ -21,14 +23,14 @@ fn has_string_value(tag: DynamicTag) -> bool {
     .contains(&tag)
 }
 
-pub fn print_dynamic(file: &ElfFile) -> elfex::Result<()> {
+pub fn print_dynamic(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let Some(table) = file.dynamic()? else {
-        println!("The file has no dynamic table.");
-        println!();
+        writeln!(out, "The file has no dynamic table.")?;
+        writeln!(out)?;
         return Ok(());
     };
     let strings = file.dynamic_strings()?;
-    println!("Dynamic table ({} entries):", table.entries.len());
+    writeln!(out, "Dynamic table ({} entries):", table.entries.len())?;
     for entry in &table.entries {
         let tag = entry.tag.to_string();
         if has_string_value(entry.tag) {
@@ -36,39 +38,44 @@ pub fn print_dynamic(file: &ElfFile) -> elfex::Result<()> {
                 |_| "<offset too large>".to_owned(),
                 |offset| string_at(strings.as_ref(), offset),
             );
-            println!("  {tag:<24} [{text}]");
+            writeln!(out, "  {tag:<24} [{text}]")?;
         } else {
-            println!("  {tag:<24} {:#x}", entry.value);
+            writeln!(out, "  {tag:<24} {:#x}", entry.value)?;
         }
     }
-    println!();
+    writeln!(out)?;
     let none = || "(none)".to_owned();
     let needed = file.needed_libraries()?;
-    println!("Linking summary:");
+    writeln!(out, "Linking summary:")?;
     if needed.is_empty() {
-        println!("  Needed:  (none)");
+        writeln!(out, "  Needed:  (none)")?;
     } else {
-        println!("  Needed:  {}", needed.join(", "));
+        writeln!(out, "  Needed:  {}", needed.join(", "))?;
     }
-    println!("  Soname:  {}", file.soname()?.unwrap_or_else(none));
-    println!("  Rpath:   {}", file.rpath()?.unwrap_or_else(none));
-    println!("  Runpath: {}", file.runpath()?.unwrap_or_else(none));
-    println!();
+    writeln!(out, "  Soname:  {}", file.soname()?.unwrap_or_else(none))?;
+    writeln!(out, "  Rpath:   {}", file.rpath()?.unwrap_or_else(none))?;
+    writeln!(out, "  Runpath: {}", file.runpath()?.unwrap_or_else(none))?;
+    writeln!(out)?;
     Ok(())
 }
 
-pub fn print_versions(file: &ElfFile) -> elfex::Result<()> {
+pub fn print_versions(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let tables = file.version_tables()?;
     let strings = file.dynamic_strings()?;
     let strings = strings.as_ref();
     if let Some(versym) = &tables.versym {
-        println!(
+        writeln!(
+            out,
             "Symbol versions (.gnu.version): {} entries",
             versym.entries.len()
-        );
+        )?;
     }
     if let Some(definitions) = &tables.definitions {
-        println!("Version definitions ({}):", definitions.definitions.len());
+        writeln!(
+            out,
+            "Version definitions ({}):",
+            definitions.definitions.len()
+        )?;
         for definition in &definitions.definitions {
             let name = definition
                 .name()
@@ -83,28 +90,34 @@ pub fn print_versions(file: &ElfFile) -> elfex::Result<()> {
                 .iter()
                 .map(|&offset| string_at(strings, offset))
                 .collect();
-            print!("  [{}] {name}{base}", definition.index);
+            write!(out, "  [{}] {name}{base}", definition.index)?;
             if !parents.is_empty() {
-                print!(" parents: {}", parents.join(", "));
+                write!(out, " parents: {}", parents.join(", "))?;
             }
-            println!();
+            writeln!(out)?;
         }
     }
     if let Some(requirements) = &tables.requirements {
-        println!(
+        writeln!(
+            out,
             "Version requirements ({}):",
             requirements.requirements.len()
-        );
+        )?;
         for requirement in &requirements.requirements {
-            println!("  {}:", string_at(strings, requirement.file));
+            writeln!(out, "  {}:", string_at(strings, requirement.file))?;
             for entry in &requirement.entries {
-                println!("    [{}] {}", entry.index, string_at(strings, entry.name));
+                writeln!(
+                    out,
+                    "    [{}] {}",
+                    entry.index,
+                    string_at(strings, entry.name)
+                )?;
             }
         }
     }
     if tables.versym.is_none() && tables.definitions.is_none() && tables.requirements.is_none() {
-        println!("The file has no symbol version tables.");
+        writeln!(out, "The file has no symbol version tables.")?;
     }
-    println!();
+    writeln!(out)?;
     Ok(())
 }

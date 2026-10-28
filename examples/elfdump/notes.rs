@@ -1,39 +1,10 @@
 //! Print the notes and the validation issues.
 
-use elfex::note::{
-    ELF_NOTE_CORE, ELF_NOTE_GNU, NT_AUXV, NT_FILE, NT_GNU_ABI_TAG, NT_GNU_BUILD_ID,
-    NT_GNU_GOLD_VERSION, NT_GNU_HWCAP, NT_GNU_PROPERTY_TYPE_0, NT_PRFPREG, NT_PRPSINFO,
-    NT_PRSTATUS, NT_SIGINFO,
-};
+use crate::Failure;
+use elfex::note::{ELF_NOTE_GNU, NT_GNU_BUILD_ID};
 use elfex::{ElfFile, Note};
-use std::fmt::Write;
-
-/// Return the name of a known note type, or the hexadecimal value.
-fn note_type(note: &Note) -> String {
-    let name = if note.name == ELF_NOTE_GNU {
-        match note.n_type {
-            NT_GNU_ABI_TAG => Some("NT_GNU_ABI_TAG"),
-            NT_GNU_HWCAP => Some("NT_GNU_HWCAP"),
-            NT_GNU_BUILD_ID => Some("NT_GNU_BUILD_ID"),
-            NT_GNU_GOLD_VERSION => Some("NT_GNU_GOLD_VERSION"),
-            NT_GNU_PROPERTY_TYPE_0 => Some("NT_GNU_PROPERTY_TYPE_0"),
-            _ => None,
-        }
-    } else if note.name == ELF_NOTE_CORE {
-        match note.n_type {
-            NT_PRSTATUS => Some("NT_PRSTATUS"),
-            NT_PRFPREG => Some("NT_PRFPREG"),
-            NT_PRPSINFO => Some("NT_PRPSINFO"),
-            NT_AUXV => Some("NT_AUXV"),
-            NT_FILE => Some("NT_FILE"),
-            NT_SIGINFO => Some("NT_SIGINFO"),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    name.map_or_else(|| format!("{:#x}", note.n_type), str::to_owned)
-}
+use std::fmt::Write as _;
+use std::io::Write;
 
 /// Return the bytes as lowercase hexadecimal digits.
 pub fn hex(bytes: &[u8]) -> String {
@@ -70,45 +41,46 @@ fn note_details(file: &ElfFile, note: &Note) -> Option<String> {
     None
 }
 
-pub fn print_notes(file: &ElfFile) -> elfex::Result<()> {
+pub fn print_notes(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let notes = file.notes()?;
-    println!("Notes ({}):", notes.len());
+    writeln!(out, "Notes ({}):", notes.len())?;
     for note in &notes {
         let owner = String::from_utf8_lossy(&note.name);
-        print!(
-            "  {owner:<8} {:<24} {:>5} bytes",
-            note_type(note),
-            note.desc.len()
-        );
+        let kind = note
+            .type_name()
+            .map_or_else(|| format!("{:#x}", note.n_type), str::to_owned);
+        write!(out, "  {owner:<8} {kind:<24} {:>5} bytes", note.desc.len())?;
         if let Some(details) = note_details(file, note) {
-            print!("  {details}");
+            write!(out, "  {details}")?;
         }
-        println!();
+        writeln!(out)?;
     }
     match file.build_id()? {
-        Some(build_id) => println!("Build ID: {}", hex(&build_id)),
-        None => println!("The file has no build ID."),
+        Some(build_id) => writeln!(out, "Build ID: {}", hex(&build_id))?,
+        None => writeln!(out, "The file has no build ID.")?,
     }
-    println!();
+    writeln!(out)?;
     Ok(())
 }
 
-pub fn print_validation(file: &ElfFile) {
+pub fn print_validation(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure> {
     let result = file.validate();
     if result.is_ok() {
-        println!("Validation: no issues.");
+        writeln!(out, "Validation: no issues.")?;
     } else {
-        println!("Validation issues ({}):", result.issues.len());
+        writeln!(out, "Validation issues ({}):", result.issues.len())?;
         for issue in &result.issues {
             let context = issue
                 .context
                 .as_deref()
                 .map_or_else(String::new, |context| format!(" ({context})"));
-            println!(
+            writeln!(
+                out,
                 "  {:?} {:?}: {}{context}",
                 issue.level, issue.code, issue.message
-            );
+            )?;
         }
     }
-    println!();
+    writeln!(out)?;
+    Ok(())
 }
