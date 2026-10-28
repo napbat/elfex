@@ -128,6 +128,7 @@ pub struct Note {
 
 impl Note {
     /// Create a note.
+    #[must_use]
     pub fn new(name: impl Into<Vec<u8>>, note_type: u32, desc: impl Into<Vec<u8>>) -> Self {
         Self {
             name: name.into(),
@@ -154,6 +155,53 @@ impl Note {
         self.name == name && self.n_type == note_type
     }
 
+    /// Return the specification name of the note type, for example `"NT_GNU_BUILD_ID"`.
+    ///
+    /// The name depends on the owner name. The function knows the `NT_*` constants of this
+    /// module for these owners:
+    ///
+    /// - `"GNU"`, and an owner that starts with `"GA"` for the build attribute notes.
+    /// - `"CORE"` and `"LINUX"`. Both owners use the same core file note types.
+    /// - `"FreeBSD"`, `"NetBSD"`, `"Android"` and `"Go"`.
+    ///
+    /// Return `None` for another owner or an unknown type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use elfex::note::{ELF_NOTE_CORE, ELF_NOTE_GNU, NT_GNU_ABI_TAG, Note};
+    ///
+    /// let note = Note::new(ELF_NOTE_GNU, NT_GNU_ABI_TAG, [0; 16]);
+    /// assert_eq!(note.type_name(), Some("NT_GNU_ABI_TAG"));
+    /// // Type 1 has a different meaning for the owner "CORE".
+    /// assert_eq!(Note::new(ELF_NOTE_CORE, 1, []).type_name(), Some("NT_PRSTATUS"));
+    /// assert_eq!(Note::new("other", 1, []).type_name(), None);
+    /// ```
+    #[must_use]
+    pub fn type_name(&self) -> Option<&'static str> {
+        let name = self.name.as_slice();
+        if name == ELF_NOTE_GNU {
+            gnu_type_name(self.n_type)
+        } else if name.starts_with(b"GA") {
+            match self.n_type {
+                NT_GNU_BUILD_ATTRIBUTE_OPEN => Some("NT_GNU_BUILD_ATTRIBUTE_OPEN"),
+                NT_GNU_BUILD_ATTRIBUTE_FUNC => Some("NT_GNU_BUILD_ATTRIBUTE_FUNC"),
+                _ => None,
+            }
+        } else if name == ELF_NOTE_CORE || name == ELF_NOTE_LINUX {
+            core_type_name(self.n_type)
+        } else {
+            let known = match name {
+                ELF_NOTE_FREEBSD => (NT_FREEBSD_ABI_TAG, "NT_FREEBSD_ABI_TAG"),
+                ELF_NOTE_NETBSD => (NT_NETBSD_IDENT, "NT_NETBSD_IDENT"),
+                ELF_NOTE_ANDROID => (NT_ANDROID_TYPE_IDENT, "NT_ANDROID_TYPE_IDENT"),
+                ELF_NOTE_GO => (NT_GO_BUILD_ID, "NT_GO_BUILD_ID"),
+                _ => return None,
+            };
+            (self.n_type == known.0).then_some(known.1)
+        }
+    }
+
     /// Decode the descriptor of a GNU `NT_GNU_ABI_TAG` note.
     ///
     /// Return `None` if the note is not a GNU ABI tag note.
@@ -171,6 +219,41 @@ impl Note {
         self.is(ELF_NOTE_GNU, NT_GNU_PROPERTY_TYPE_0)
             .then(|| parse_gnu_properties(&self.desc, encoding))
     }
+}
+
+/// Return the name of a GNU note type.
+const fn gnu_type_name(note_type: u32) -> Option<&'static str> {
+    Some(match note_type {
+        NT_GNU_ABI_TAG => "NT_GNU_ABI_TAG",
+        NT_GNU_HWCAP => "NT_GNU_HWCAP",
+        NT_GNU_BUILD_ID => "NT_GNU_BUILD_ID",
+        NT_GNU_GOLD_VERSION => "NT_GNU_GOLD_VERSION",
+        NT_GNU_PROPERTY_TYPE_0 => "NT_GNU_PROPERTY_TYPE_0",
+        _ => return None,
+    })
+}
+
+/// Return the name of a core file note type (owner `"CORE"` or `"LINUX"`).
+const fn core_type_name(note_type: u32) -> Option<&'static str> {
+    Some(match note_type {
+        NT_PRSTATUS => "NT_PRSTATUS",
+        NT_PRFPREG => "NT_PRFPREG",
+        NT_PRPSINFO => "NT_PRPSINFO",
+        NT_TASKSTRUCT => "NT_TASKSTRUCT",
+        NT_AUXV => "NT_AUXV",
+        NT_SIGINFO => "NT_SIGINFO",
+        NT_FILE => "NT_FILE",
+        NT_PRXFPREG => "NT_PRXFPREG",
+        NT_X86_XSTATE => "NT_X86_XSTATE",
+        NT_ARM_VFP => "NT_ARM_VFP",
+        NT_ARM_TLS => "NT_ARM_TLS",
+        NT_ARM_HW_BREAK => "NT_ARM_HW_BREAK",
+        NT_ARM_HW_WATCH => "NT_ARM_HW_WATCH",
+        NT_ARM_SVE => "NT_ARM_SVE",
+        NT_ARM_PAC_MASK => "NT_ARM_PAC_MASK",
+        NT_ARM_TAGGED_ADDR_CTRL => "NT_ARM_TAGGED_ADDR_CTRL",
+        _ => return None,
+    })
 }
 
 /// Convert a note alignment (`sh_addralign` or `p_align`) to the entry alignment: 4 or 8.
@@ -355,6 +438,35 @@ mod tests {
                 Note::new(b"Go", NT_GO_BUILD_ID, Vec::new()),
             ],
         }
+    }
+
+    #[test]
+    fn names_note_types_by_owner() {
+        let name = |owner: &[u8], note_type| Note::new(owner, note_type, []).type_name();
+        assert_eq!(name(ELF_NOTE_GNU, NT_GNU_BUILD_ID), Some("NT_GNU_BUILD_ID"));
+        assert_eq!(
+            name(ELF_NOTE_GNU, NT_GNU_PROPERTY_TYPE_0),
+            Some("NT_GNU_PROPERTY_TYPE_0")
+        );
+        assert_eq!(name(ELF_NOTE_GNU, NT_FILE), None);
+        assert_eq!(
+            name(b"GA$\x013a1", NT_GNU_BUILD_ATTRIBUTE_OPEN),
+            Some("NT_GNU_BUILD_ATTRIBUTE_OPEN")
+        );
+        assert_eq!(name(b"GA$\x013a1", NT_GNU_BUILD_ID), None);
+        // Type 1 has a different name for each owner.
+        assert_eq!(name(ELF_NOTE_CORE, 1), Some("NT_PRSTATUS"));
+        assert_eq!(name(ELF_NOTE_LINUX, 1), Some("NT_PRSTATUS"));
+        assert_eq!(name(ELF_NOTE_LINUX, NT_X86_XSTATE), Some("NT_X86_XSTATE"));
+        assert_eq!(name(ELF_NOTE_CORE, NT_FILE), Some("NT_FILE"));
+        assert_eq!(name(ELF_NOTE_FREEBSD, 1), Some("NT_FREEBSD_ABI_TAG"));
+        assert_eq!(name(ELF_NOTE_NETBSD, 1), Some("NT_NETBSD_IDENT"));
+        assert_eq!(name(ELF_NOTE_ANDROID, 1), Some("NT_ANDROID_TYPE_IDENT"));
+        assert_eq!(name(ELF_NOTE_GO, NT_GO_BUILD_ID), Some("NT_GO_BUILD_ID"));
+        assert_eq!(name(ELF_NOTE_GO, 1), None);
+        assert_eq!(name(ELF_NOTE_CORE, 0x9999), None);
+        assert_eq!(name(b"", 1), None);
+        assert_eq!(name(b"Xen", 1), None);
     }
 
     #[test]
