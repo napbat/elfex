@@ -4,6 +4,50 @@
 //! Entries ([`Fde`]) of an `.eh_frame` section. It does not interpret the call frame
 //! instructions: they stay as raw bytes. [`EhFrameHdr`] reads and writes the
 //! `.eh_frame_hdr` section that the `PT_GNU_EH_FRAME` segment maps.
+//!
+//! The module also decodes `DW_EH_PE_*` pointers ([`read_encoded_pointer`]), and reads and
+//! writes LEB128 values ([`read_uleb128`], [`write_uleb128`]).
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::eh_frame::{EhFrame, EhFrameEntry, EhFrameHdr, EhFrameHdrEntry};
+//! use elfex::Encoding;
+//!
+//! let encoding = Encoding::ELF64_LE;
+//! // The crate has no `.eh_frame` writer. Write a CIE (version 1, no augmentation) and an
+//! // FDE for the code at 0x1000..0x1010 with the `Encoding` helpers.
+//! let mut frame = Vec::new();
+//! encoding.write_u32(&mut frame, 12); // The CIE length.
+//! encoding.write_u32(&mut frame, 0); // The CIE id.
+//! // The version, "", the code and data alignment factors, the return address register
+//! // and DW_CFA_nop padding.
+//! frame.extend_from_slice(&[1, 0, 1, 0x78, 16, 0, 0, 0]);
+//! encoding.write_u32(&mut frame, 20); // The FDE length.
+//! encoding.write_u32(&mut frame, 20); // The CIE pointer: back to offset 0.
+//! encoding.write_u64(&mut frame, 0x1000); // The initial location.
+//! encoding.write_u64(&mut frame, 0x10); // The address range.
+//! encoding.write_u32(&mut frame, 0); // The terminator.
+//!
+//! let entries = EhFrame::parse(&frame, encoding, 0x2000)?;
+//! let [EhFrameEntry::Cie(cie), EhFrameEntry::Fde(fde)] = entries.as_slice() else {
+//!     panic!("the section has one CIE and one FDE");
+//! };
+//! assert_eq!(cie.data_alignment_factor, -8);
+//! assert_eq!((fde.cie_offset, fde.pc_begin, fde.pc_range), (0, 0x1000, 0x10));
+//!
+//! // The `.eh_frame_hdr` search table gives the FDE of an address.
+//! let hdr = EhFrameHdr {
+//!     version: 1,
+//!     eh_frame_ptr: 0x2000,
+//!     entries: vec![EhFrameHdrEntry { initial_location: 0x1000, fde_address: 0x2010 }],
+//!     ..EhFrameHdr::default()
+//! };
+//! let parsed = EhFrameHdr::parse(&hdr.write(encoding, 0x1800)?, encoding, 0x1800)?;
+//! assert_eq!(parsed.eh_frame_ptr, 0x2000);
+//! assert_eq!(parsed.find_fde(0x1008), Some(0x2010));
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 mod hdr;
 mod pointer;
