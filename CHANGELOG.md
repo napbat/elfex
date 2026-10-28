@@ -28,7 +28,8 @@ The first release, 0.1.0.
   and GNU hash tables, GNU symbol versions, section groups (`GroupTable`), `REL`, `RELA` and
   `RELR` relocations, and `.eh_frame` and `.eh_frame_hdr`. Each table builder has a `try_build`
   function that returns a `Result`, and a `build` function that panics on invalid input.
-- Type names for relocations (`Relocation::type_name`) of many architectures and for notes
+- Type names for relocations (`Relocation::type_name`) of x86-64, i386, `AArch64`, Arm,
+  RISC-V, PowerPC, PowerPC64, S/390, MIPS, `LoongArch`, SPARC and Hexagon, and for notes
   (`Note::type_name`).
 - Core file notes: `NT_FILE` mappings and the `NT_AUXV` auxiliary vector.
 - Mapped image helpers: the image origin, the load bias, `to_mapped_image`, and
@@ -39,5 +40,7 @@ The first release, 0.1.0.
 - `no_std + alloc` support. The `std` feature adds file helpers and `FileReader`. The crate
   needs a `usize` of at least 32 bits.
 - Examples: `elfdump`, `elfpatch`, `dump-process` and `build-tiny`.
+- Compatibility tests with real files (`tests/corpus`, ignored by default): a comparison with
+  `llvm-readelf`, and a test that edits real programs and runs them.
 
 [Unreleased]: https://github.com/napbat/elfex/commits/main
