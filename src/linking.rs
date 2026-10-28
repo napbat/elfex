@@ -1,11 +1,12 @@
-//! Dynamic linking data of an `ElfFile` or an `ElfImage`.
+//! Dynamic linking data of an [`ElfFile`](crate::ElfFile) or an [`ElfImage`](crate::ElfImage).
 //!
 //! The dynamic table (`.dynamic`, `PT_DYNAMIC`) names the tables that the dynamic linker uses:
 //! the dynamic string and symbol tables, the hash tables, the version tables, the relocations
 //! and the initialization arrays. `ElfFile` and `ElfImage` have the same accessors for these
 //! tables, for example `dynamic_symbols()`, `needed_libraries()` and `dynamic_relocations()`.
-//! This module holds the result types of these accessors. The symbol accessors return
-//! [`NamedSymbol`](crate::NamedSymbol).
+//!
+//! This module holds the result types of these accessors: [`DynamicRelocations`] and
+//! [`VersionTables`]. The symbol accessors return [`NamedSymbol`](crate::NamedSymbol).
 //!
 //! The two types also read the notes of a core file: `core_file_mappings()` (`NT_FILE`) and
 //! `auxv()` (`NT_AUXV`).
@@ -21,7 +22,8 @@
 //!
 //! In a loaded process, glibc changes many `d_ptr` values of `.dynamic` to runtime addresses
 //! (but not on MIPS and RISC-V). `ElfImage` translates such a value back to a virtual address
-//! of the file if it knows the load bias. See `ElfImage::resolve_pointer`.
+//! of the file if it knows the load bias. See
+//! [`ElfImage::resolve_pointer`](crate::ElfImage::resolve_pointer).
 
 mod relocations;
 mod symbols;
