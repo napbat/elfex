@@ -18,6 +18,9 @@ use crate::{Error, Result};
 use core::cell::Cell;
 use core::ops::Range;
 
+mod edges;
+mod source;
+
 /// The virtual address of the image origin in the sample.
 const BASE: u64 = 0x1_0000;
 /// The interpreter path in the sample, with its null byte.
@@ -133,23 +136,68 @@ fn runtime_base(encoding: Encoding) -> u64 {
     }
 }
 
-/// A source with an unknown size that fails for reads that touch `hole`.
-struct HoleReader<'a> {
+/// A test source that holds `data` at the offset `base`, with a known or an unknown size.
+///
+/// A read that starts in `hole` fails. A read that starts before `hole` stops at its start.
+/// The source records the largest read request. All the tests of special sources use this
+/// type, so that one instantiation of the generic parser covers all the read paths.
+struct TestReader<'a> {
     data: &'a [u8],
+    base: u64,
     hole: Range<u64>,
+    sized: bool,
+    largest: Cell<usize>,
 }
 
-impl ReadAt for HoleReader<'_> {
+impl<'a> TestReader<'a> {
+    /// Return a source of `data` with a known size.
+    fn sized(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            base: 0,
+            hole: 0..0,
+            sized: true,
+            largest: Cell::new(0),
+        }
+    }
+
+    /// Return a source of `data` with an unknown size.
+    fn unknown_size(data: &'a [u8]) -> Self {
+        Self {
+            sized: false,
+            ..Self::sized(data)
+        }
+    }
+
+    /// Make the reads in `hole` fail.
+    fn with_hole(self, hole: Range<u64>) -> Self {
+        Self { hole, ..self }
+    }
+
+    /// Put the data at the offset `base`.
+    fn at(self, base: u64) -> Self {
+        Self { base, ..self }
+    }
+}
+
+impl ReadAt for TestReader<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let end = offset + to_u64(buf.len());
-        if offset < self.hole.end && self.hole.start < end {
+        self.largest.set(self.largest.get().max(buf.len()));
+        if self.hole.contains(&offset) || offset < self.base {
             return Err(Error::generic("the page is not readable"));
         }
-        SliceReader::new(self.data).read_at(offset, buf)
+        let end = offset.saturating_add(to_u64(buf.len()));
+        let buf = if offset < self.hole.start && self.hole.start < end {
+            let len = usize::try_from(self.hole.start - offset).unwrap();
+            &mut buf[..len]
+        } else {
+            buf
+        };
+        SliceReader::new(self.data).read_at(offset - self.base, buf)
     }
 
     fn size(&self) -> Option<u64> {
-        None
+        self.sized.then(|| self.base + to_u64(self.data.len()))
     }
 }
 
@@ -310,18 +358,24 @@ fn build_clears_section_fields_and_checks_counts() {
     ));
 }
 
+/// Read `data` with `options` from a [`TestReader`] with a known size.
+fn read_sized(data: &[u8], options: ParseOptions) -> Result<ElfImage> {
+    ElfImage::read_from_with_options(&TestReader::sized(data), 0, options)
+}
+
 #[test]
 fn truncated_file_needs_missing_data_option() {
     let bytes = sample(Encoding::ELF64_LE);
     let truncated = &bytes[..0x220];
-    let error = ElfImage::parse(truncated).unwrap_err();
+    let error = read_sized(truncated, ParseOptions::file()).unwrap_err();
     assert!(
         matches!(error.kind(), ErrorKind::InvalidSegment(_)),
         "{error:?}"
     );
+    assert_eq!(error.context().unwrap().file_offset, Some(0x200));
 
     let options = ParseOptions::file().allow_missing_segment_data();
-    let image = ElfImage::parse_with_options(truncated, options).unwrap();
+    let image = read_sized(truncated, options).unwrap();
     assert_eq!(image.segments[3].data.len(), 0x40);
     assert_eq!(image.segments[3].data[..0x20], bytes[0x200..0x220]);
     assert!(all_zero(&image.segments[3].data[0x20..]));
@@ -330,8 +384,13 @@ fn truncated_file_needs_missing_data_option() {
         segments[3].filesz = 0x10_0000;
         segments[3].memsz = 0x10_0000;
     });
-    assert!(ElfImage::parse(&huge).is_err());
-    assert!(ElfImage::parse_with_options(&huge, options).is_err());
+    assert!(read_sized(&huge, ParseOptions::file()).is_err());
+    let error = read_sized(&huge, options).unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidSegment(_)),
+        "{error:?}"
+    );
+    assert_eq!(error.context().unwrap().file_offset, Some(0x200));
 }
 
 #[test]
@@ -341,14 +400,14 @@ fn truncated_mapped_image() {
         .to_mapped_image()
         .unwrap();
     // The source ends after `p_filesz`: the segment keeps the bytes that the source has.
-    let image = ElfImage::parse_mapped(&mapped[..0x1300]).unwrap();
+    let image = read_sized(&mapped[..0x1300], ParseOptions::mapped()).unwrap();
     assert_eq!(image.segments[3].data, mapped[0x1200..0x1300]);
     assert_eq!(image.read_vaddr(BASE + 0x13f0, 0x10).unwrap(), [0; 0x10]);
 
     // The source ends before `p_filesz`.
-    assert!(ElfImage::parse_mapped(&mapped[..0x1220]).is_err());
+    assert!(read_sized(&mapped[..0x1220], ParseOptions::mapped()).is_err());
     let options = ParseOptions::mapped().allow_missing_segment_data();
-    let image = ElfImage::parse_with_options(&mapped[..0x1220], options).unwrap();
+    let image = read_sized(&mapped[..0x1220], options).unwrap();
     assert_eq!(image.segments[3].data.len(), 0x40);
     assert_eq!(image.segments[3].data[..0x20], mapped[0x1200..0x1220]);
     assert!(all_zero(&image.segments[3].data[0x20..]));
@@ -365,46 +424,17 @@ fn missing_page_reads_as_zeros() {
     // Build a raw file first, so that the mapped headers describe the changed segments.
     let built = image.try_build().unwrap();
     let mapped = ElfImage::parse(&built).unwrap().to_mapped_image().unwrap();
-    let reader = HoleReader {
-        data: &mapped,
-        hole: 0x1800..0x1810,
-    };
+    let reader = TestReader::unknown_size(&mapped).with_hole(0x1800..0x1810);
     assert!(ElfImage::read_from_with_options(&reader, 0, ParseOptions::mapped()).is_err());
 
     let options = ParseOptions::mapped().allow_missing_segment_data();
     let parsed = ElfImage::read_from_with_options(&reader, 0, options).unwrap();
     let data = &parsed.segments[2].data;
     assert_eq!(data.len(), 0x3000);
-    assert_eq!(data[..0x1000], mapped[..0x1000]);
-    assert!(all_zero(&data[0x1000..0x2000]));
+    assert_eq!(data[..0x1800], mapped[..0x1800]);
+    assert!(all_zero(&data[0x1800..0x2000]));
     assert_eq!(data[0x2000..], mapped[0x2000..0x3000]);
     assert_eq!(parsed.segments[3].data, mapped[0x3200..]);
-}
-
-/// A source with an unknown size that records the largest read request.
-struct UnsizedReader<'a> {
-    data: &'a [u8],
-    largest: Cell<usize>,
-}
-
-impl<'a> UnsizedReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            largest: Cell::new(0),
-        }
-    }
-}
-
-impl ReadAt for UnsizedReader<'_> {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        self.largest.set(self.largest.get().max(buf.len()));
-        SliceReader::new(self.data).read_at(offset, buf)
-    }
-
-    fn size(&self) -> Option<u64> {
-        None
-    }
 }
 
 #[test]
@@ -418,7 +448,7 @@ fn unsized_mapped_source_reads_large_segment_in_chunks() {
     Encoding::ELF64_LE
         .put_u64(&mut mapped, memsz, 1 << 30)
         .unwrap();
-    let reader = UnsizedReader::new(&mapped);
+    let reader = TestReader::unknown_size(&mapped);
     let image = ElfImage::read_from_with_options(&reader, 0, ParseOptions::mapped()).unwrap();
     // The source ends after `p_filesz`: the segment keeps the bytes that the source has.
     assert_eq!(image.segments[3].data, mapped[0x1200..]);
@@ -436,7 +466,7 @@ fn unsized_file_source_rejects_large_segment_without_large_reads() {
         segments[3].filesz = 1 << 30;
         segments[3].memsz = 1 << 30;
     });
-    let reader = UnsizedReader::new(&bytes);
+    let reader = TestReader::unknown_size(&bytes);
     let error = ElfImage::read_from(&reader, 0, SourceLayout::File).unwrap_err();
     assert!(
         matches!(error.kind(), ErrorKind::BufferTooSmall { .. }),
