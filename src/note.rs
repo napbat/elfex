@@ -7,8 +7,29 @@
 //! The meaning of a note type depends on the owner name. For example, type 1 is
 //! [`NT_GNU_ABI_TAG`] for the owner `"GNU"` and [`NT_PRSTATUS`] for the owner `"CORE"`.
 //!
-//! The module also decodes GNU notes ([`GnuAbiTag`] and [`GnuProperty`]) and core file notes
-//! ([`FileMapping`] for `NT_FILE` and [`AuxvEntry`] for `NT_AUXV`).
+//! - [`Note`] is one entry. [`NoteTable`] parses and writes a sequence of entries.
+//! - The module also decodes GNU notes ([`GnuAbiTag`] and [`GnuProperty`]) and core file
+//!   notes ([`FileMapping`] for `NT_FILE` and [`AuxvEntry`] for `NT_AUXV`).
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::note::{ELF_NOTE_GNU, NT_GNU_BUILD_ID, Note, NoteTable};
+//! use elfex::Encoding;
+//!
+//! let table = NoteTable {
+//!     notes: vec![Note::gnu_build_id(vec![0xde, 0xad, 0xbe, 0xef])],
+//! };
+//! let bytes = table.write(Encoding::ELF64_LE, 4)?;
+//! // The header (12 bytes), "GNU\0" (4 bytes) and the descriptor (4 bytes).
+//! assert_eq!(bytes.len(), 20);
+//!
+//! let parsed = NoteTable::parse(&bytes, Encoding::ELF64_LE, 4)?;
+//! assert_eq!(parsed, table);
+//! assert!(parsed.notes[0].is(ELF_NOTE_GNU, NT_GNU_BUILD_ID));
+//! assert_eq!(parsed.build_id(), Some(&[0xde, 0xad, 0xbe, 0xef][..]));
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 mod coredump;
 mod gnu;
