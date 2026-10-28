@@ -8,6 +8,33 @@
 //! The relocation type values are processor-specific. The submodules ([`x86_64`], [`i386`],
 //! [`aarch64`], [`arm`], [`riscv`], [`ppc`], [`ppc64`], [`s390`], [`mips`], [`loongarch`])
 //! hold the `R_*` constants. Use [`relocation_type_name`] to get the spec name of a type.
+//!
+//! # Examples
+//!
+//! ```
+//! use elfex::reloc::x86_64::{R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE};
+//! use elfex::reloc::{Relocation, RelocationTable, RelrTable};
+//! use elfex::{Encoding, Machine};
+//!
+//! let encoding = Encoding::ELF64_LE;
+//! let mut table = RelocationTable::new(true);
+//! table.relocations.push(Relocation::with_addend(0x4000, 0, R_X86_64_RELATIVE, 0x1234));
+//! table.relocations.push(Relocation::with_addend(0x4008, 1, R_X86_64_JUMP_SLOT, 0));
+//! let bytes = table.write(encoding, Machine::X86_64)?;
+//! assert_eq!(bytes.len(), 2 * 24);
+//!
+//! let parsed = RelocationTable::parse_rela(&bytes, encoding, Machine::X86_64)?;
+//! assert_eq!(parsed, table);
+//! assert!(parsed.relocations[0].is_relative(Machine::X86_64));
+//! let name = parsed.relocations[1].type_name(Machine::X86_64);
+//! assert_eq!(name, Some("R_X86_64_JUMP_SLOT"));
+//!
+//! // A RELR table packs the addresses of relative relocations.
+//! let relr = RelrTable::from_addresses(vec![0x4010, 0x4000, 0x4008], encoding)?;
+//! let packed = RelrTable::parse(&relr.write(encoding)?, encoding)?;
+//! assert_eq!(packed.addresses, [0x4000, 0x4008, 0x4010]);
+//! # Ok::<(), elfex::Error>(())
+//! ```
 
 use crate::endian::{ByteReader, Class, Encoding, Endian};
 use crate::header::Machine;
