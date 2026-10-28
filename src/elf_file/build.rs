@@ -78,7 +78,10 @@ impl ElfFile {
             header.phentsize,
         );
 
-        let mut out = self.data.clone();
+        let mut out = Vec::new();
+        out.try_reserve_exact(self.data.len())
+            .map_err(|_| Error::generic("the output file is too large to allocate"))?;
+        out.extend_from_slice(&self.data);
         let section_range =
             self.write_section_table(&mut out, &mut header, zero, &program_range)?;
         self.write_program_table(&mut out, &header, &section_range)?;

@@ -509,6 +509,22 @@ impl ElfFile {
             .ok_or_else(|| Error::value_out_of_range("the segment address overflows"))?;
         self.check_range(offset, size)?;
         self.check_range(vaddr, size)?;
+        let table = offset..offset.saturating_add(size);
+        let covered = self
+            .section_ranges(None)
+            .any(|range| overlaps(&range, &table))
+            || self
+                .headers
+                .program_headers
+                .iter()
+                .filter(|segment| !segment.is_load() && segment.segment_type != SegmentType::PHDR)
+                .filter_map(ProgramHeader::file_range)
+                .any(|range| overlaps(&range, &table));
+        if covered {
+            return Err(Error::invalid_segment(
+                "a section or segment goes past the end of the file and covers the new program header table",
+            ));
+        }
         self.append_at(offset, vec![0; table_size])?;
         self.insert_load(ProgramHeader {
             segment_type: SegmentType::LOAD,
