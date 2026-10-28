@@ -267,3 +267,70 @@ impl<'a> IntoIterator for &'a ValidationResult {
         self.issues.iter()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mixed() -> ValidationResult {
+        let mut result = ValidationResult::new();
+        result.push(ValidationIssue::warning(
+            ValidationCode::UnsortedSegments,
+            "first",
+        ));
+        result.push(
+            ValidationIssue::error(ValidationCode::SegmentOutOfFile, "second")
+                .with_context("PT_LOAD 1"),
+        );
+        result.push(ValidationIssue::warning(
+            ValidationCode::MisalignedSection,
+            "third",
+        ));
+        result
+    }
+
+    fn messages<'a>(issues: impl Iterator<Item = &'a ValidationIssue>) -> Vec<&'a str> {
+        issues.map(|issue| issue.message.as_str()).collect()
+    }
+
+    #[test]
+    fn result_splits_errors_and_warnings() {
+        let result = mixed();
+        assert!(result.has_errors() && result.has_warnings());
+        assert!(!result.is_ok() && !result.is_empty());
+        assert_eq!(result.len(), 3);
+        assert_eq!((result.error_count(), result.warning_count()), (1, 2));
+        assert_eq!(messages(result.errors()), ["second"]);
+        assert_eq!(messages(result.warnings()), ["first", "third"]);
+        assert!(result.contains(ValidationCode::MisalignedSection));
+        assert!(!result.contains(ValidationCode::InvalidDynamic));
+
+        assert_eq!(messages(result.iter()), ["first", "second", "third"]);
+        assert_eq!(
+            messages((&result).into_iter()),
+            ["first", "second", "third"]
+        );
+        let owned: Vec<ValidationIssue> = result.clone().into_iter().collect();
+        assert_eq!(owned, result.issues);
+
+        let empty = ValidationResult::default();
+        assert!(empty.is_ok() && empty.is_empty());
+        assert!(!empty.has_errors() && !empty.has_warnings());
+        assert_eq!((empty.error_count(), empty.warning_count()), (0, 0));
+    }
+
+    #[test]
+    fn issue_display_shows_level_code_message_and_context() {
+        let result = mixed();
+        assert_eq!(
+            result.issues[0].to_string(),
+            "[Warning] UnsortedSegments: first"
+        );
+        assert_eq!(
+            result.issues[1].to_string(),
+            "[Error] SegmentOutOfFile: second (PT_LOAD 1)"
+        );
+        assert!(result.issues[1].is_error() && !result.issues[1].is_warning());
+        assert!(ValidationLevel::Warning < ValidationLevel::Error);
+    }
+}
