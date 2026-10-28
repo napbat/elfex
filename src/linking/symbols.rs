@@ -128,17 +128,12 @@ impl<S: AddressSpace> Linker<'_, S> {
         let Some(address) = self.pointer(DynamicTag::SYMTAB_SHNDX) else {
             return Ok(None);
         };
-        let size = u64::try_from(count)
-            .ok()
-            .and_then(|count| count.checked_mul(4))
-            .ok_or_else(|| {
-                Error::invalid_table(format!("the symbol count {count} is too large"))
-                    .in_structure("DT_SYMTAB_SHNDX")
-            })?;
+        // A table in memory has fewer than `u64::MAX / 4` entries. `bytes` rejects a size
+        // that the segment does not hold.
+        let size = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(4);
         let bytes = self.bytes(address, size, "DT_SYMTAB_SHNDX")?;
-        SymbolSectionIndexTable::parse(bytes, encoding)
-            .map(Some)
-            .map_err(|error| error.in_structure("DT_SYMTAB_SHNDX").at_address(address))
+        // `size` is a multiple of 4, so the parse cannot fail.
+        SymbolSectionIndexTable::parse(bytes, encoding).map(Some)
     }
 
     /// Return the extended section indices of `symbols`, if a symbol needs them.
@@ -178,17 +173,12 @@ impl<S: AddressSpace> Linker<'_, S> {
                 None => return Ok(None),
             },
         };
-        let size = u64::try_from(count)
-            .ok()
-            .and_then(|count| count.checked_mul(2))
-            .ok_or_else(|| {
-                Error::invalid_table(format!("the symbol count {count} is too large"))
-                    .in_structure("DT_VERSYM")
-            })?;
+        // A table in memory has fewer than `u64::MAX / 2` entries. `bytes` rejects a size
+        // that the segment does not hold.
+        let size = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(2);
         let bytes = self.bytes(address, size, "DT_VERSYM")?;
-        VersymTable::parse(bytes, encoding)
-            .map(Some)
-            .map_err(|error| error.in_structure("DT_VERSYM").at_address(address))
+        // `size` is a multiple of 2, so the parse cannot fail.
+        VersymTable::parse(bytes, encoding).map(Some)
     }
 
     /// Return the version definitions.

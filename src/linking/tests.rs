@@ -25,6 +25,8 @@ struct Flat {
     /// A value that `resolve_pointer` subtracts from each value.
     pointer_bias: u64,
     notes: Vec<(Vec<u8>, u64)>,
+    /// The virtual address and the bytes of a `PT_GNU_EH_FRAME` segment.
+    eh_frame_hdr: Option<(u64, Vec<u8>)>,
 }
 
 impl Flat {
@@ -37,6 +39,7 @@ impl Flat {
             dynamic: None,
             pointer_bias: 0,
             notes: Vec::new(),
+            eh_frame_hdr: None,
         }
     }
 
@@ -86,8 +89,24 @@ impl AddressSpace for Flat {
         Ok(self.dynamic.as_deref())
     }
 
-    fn segments(&self, _segment_type: SegmentType) -> Result<Vec<SegmentBytes<'_>>> {
-        Ok(Vec::new())
+    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'_>>> {
+        let hdr = self
+            .eh_frame_hdr
+            .as_ref()
+            .filter(|_| segment_type == SegmentType::GNU_EH_FRAME);
+        Ok(hdr
+            .map(|(vaddr, data)| SegmentBytes {
+                header: ProgramHeader {
+                    segment_type,
+                    vaddr: *vaddr,
+                    filesz: len(data),
+                    memsz: len(data),
+                    ..ProgramHeader::default()
+                },
+                data,
+            })
+            .into_iter()
+            .collect())
     }
 
     fn note_sources(&self) -> Result<Vec<NoteSource<'_>>> {
@@ -662,4 +681,145 @@ fn relocation_iterator_covers_all_tables() {
     };
     let offsets: Vec<u64> = relocations.iter().map(|r| r.offset).collect();
     assert_eq!(offsets, [1, 2, 3]);
+}
+
+#[test]
+fn plt_relocations_follow_dt_pltrel() {
+    let cases = [
+        (Encoding::ELF64_LE, Machine::X86_64, true),
+        (Encoding::ELF32_BE, Machine::PPC, false),
+    ];
+    for (encoding, machine, with_addend) in cases {
+        let relocation = Relocation::new(0x2000, 1, 7);
+        let table = RelocationTable {
+            relocations: vec![Relocation {
+                addend: with_addend.then_some(-8),
+                ..relocation
+            }],
+            with_addend,
+        };
+        let bytes = table.write(encoding, machine).unwrap();
+        let mut flat = Flat::new(encoding, machine);
+        let address = flat.place(&bytes);
+        let (kind, table_tag, size_tag) = if with_addend {
+            (DynamicTag::RELA, DynamicTag::RELA, DynamicTag::RELASZ)
+        } else {
+            (DynamicTag::REL, DynamicTag::REL, DynamicTag::RELSZ)
+        };
+        // The Rel or Rela table has no entry size tag: the parser uses the standard size.
+        flat.set_dynamic(&[
+            (DynamicTag::JMPREL, address),
+            (DynamicTag::PLTRELSZ, len(&bytes)),
+            (DynamicTag::PLTREL, u64::try_from(kind.0).unwrap()),
+            (table_tag, address),
+            (size_tag, len(&bytes)),
+        ]);
+        let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
+        assert_eq!(relocations.plt.as_ref(), Some(&table));
+        let other = if with_addend {
+            relocations.rela
+        } else {
+            relocations.rel
+        };
+        assert_eq!(other, Some(table));
+    }
+}
+
+#[test]
+fn zero_size_tables_do_not_read_memory() {
+    let mut flat = Flat::new(Encoding::ELF64_LE, Machine::X86_64);
+    flat.set_dynamic(&[(DynamicTag::RELA, 0x10), (DynamicTag::RELASZ, 0)]);
+    let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
+    assert_eq!(relocations.rela, Some(RelocationTable::new(true)));
+}
+
+#[test]
+fn symbol_table_size_overflow_is_an_error() {
+    let mut flat = Flat::new(Encoding::ELF64_BE, Machine::MIPS);
+    let symtab = flat.place(&[0; 24]);
+    flat.set_dynamic(&[
+        (DynamicTag::SYMTAB, symtab),
+        (DynamicTag::MIPS_SYMTABNO, u64::MAX),
+    ]);
+    let error = Linker::load(&flat).unwrap().symbols().unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
+        "{error}"
+    );
+    assert_eq!(structure(&error), Some("DT_SYMTAB"));
+}
+
+#[test]
+fn versym_size_comes_from_the_symbol_count() {
+    let encoding = Encoding::ELF32_LE;
+    let mut flat = Flat::new(encoding, Machine::I386);
+    let versym = flat.place(&[1, 0, 2, 0]);
+    flat.set_dynamic(&[(DynamicTag::VERSYM, versym)]);
+    let linker = Linker::load(&flat).unwrap();
+    // Without a symbol table, the size of the table is unknown.
+    assert_eq!(linker.versions(None).unwrap().versym, None);
+    assert_eq!(
+        linker.versions(Some(2)).unwrap().versym,
+        Some(VersymTable {
+            entries: vec![1, 2]
+        })
+    );
+    let error = linker.versions(Some(3)).unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
+        "{error}"
+    );
+    assert_eq!(structure(&error), Some("DT_VERSYM"));
+    assert_eq!(error.context().unwrap().address, Some(versym));
+}
+
+#[test]
+fn dynamic_string_offsets_have_32_bits() {
+    let mut flat = Flat::new(Encoding::ELF64_LE, Machine::X86_64);
+    let strtab = flat.place(b"\0libc.so.6\0");
+    flat.set_dynamic(&[
+        (DynamicTag::STRTAB, strtab),
+        (DynamicTag::SONAME, 1),
+        (DynamicTag::NEEDED, 1 << 32),
+    ]);
+    let linker = Linker::load(&flat).unwrap();
+    let soname = linker.string_entry(DynamicTag::SONAME).unwrap();
+    assert_eq!(soname.as_deref(), Some("libc.so.6"));
+    let error = linker.needed_libraries().unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
+        "{error}"
+    );
+    assert_eq!(structure(&error), Some("DT_STRTAB"));
+}
+
+#[test]
+fn eh_frame_hdr_comes_from_the_segment() {
+    let encoding = Encoding::ELF32_BE;
+    let address = 0x2000;
+    let hdr = EhFrameHdr {
+        eh_frame_ptr: 0x3000,
+        entries: vec![crate::eh_frame::EhFrameHdrEntry {
+            initial_location: 0x1000,
+            fde_address: 0x3010,
+        }],
+        ..EhFrameHdr::default()
+    };
+    let bytes = hdr.write(encoding, address).unwrap();
+    let mut flat = Flat::new(encoding, Machine::PPC);
+    flat.eh_frame_hdr = Some((address, bytes.clone()));
+    let parsed = eh_frame_hdr(&flat).unwrap().unwrap();
+    assert_eq!(parsed.eh_frame_ptr, 0x3000);
+    assert_eq!(parsed.find_fde(0x1004), Some(0x3010));
+
+    let mut unsupported = bytes;
+    unsupported[0] = 2;
+    flat.eh_frame_hdr = Some((address, unsupported));
+    let error = eh_frame_hdr(&flat).unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::InvalidTable(_)),
+        "{error}"
+    );
+    assert_eq!(structure(&error), Some("PT_GNU_EH_FRAME"));
+    assert_eq!(error.context().unwrap().address, Some(address));
 }
