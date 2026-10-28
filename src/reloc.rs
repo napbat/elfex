@@ -6,8 +6,9 @@
 //! [`RelrTable`] is the contents of an `SHT_RELR` section or of the `DT_RELR` range.
 //!
 //! The relocation type values are processor-specific. The submodules ([`x86_64`], [`i386`],
-//! [`aarch64`], [`arm`], [`riscv`], [`ppc`], [`ppc64`], [`s390`], [`mips`], [`loongarch`])
-//! hold the `R_*` constants. Use [`relocation_type_name`] to get the spec name of a type.
+//! [`aarch64`], [`arm`], [`riscv`], [`ppc`], [`ppc64`], [`s390`], [`mips`], [`loongarch`],
+//! [`sparc`], [`hexagon`]) hold the `R_*` constants. Use [`relocation_type_name`] to get the
+//! spec name of a type.
 //!
 //! # Examples
 //!
@@ -64,6 +65,7 @@ macro_rules! reloc_types {
 
 pub mod aarch64;
 pub mod arm;
+pub mod hexagon;
 pub mod i386;
 pub mod loongarch;
 pub mod mips;
@@ -72,6 +74,7 @@ pub mod ppc64;
 mod relr;
 pub mod riscv;
 pub mod s390;
+pub mod sparc;
 pub mod x86_64;
 
 #[cfg(test)]
@@ -237,10 +240,12 @@ impl Relocation {
     ///
     /// For MIPS, the name is the name of the first type: the low byte of
     /// [`r_type`](Self::r_type). An ELF64 MIPS entry packs up to three types in this field.
-    /// Return `None` for an unknown machine or type.
+    /// For SPARC V9 (`EM_SPARCV9`), the name is also the name of the low byte: the upper bits
+    /// hold additional data (`ELF64_R_TYPE_DATA`). Return `None` for an unknown machine or
+    /// type.
     #[must_use]
     pub const fn type_name(&self, machine: Machine) -> Option<&'static str> {
-        let r_type = if machine.0 == Machine::MIPS.0 {
+        let r_type = if machine.0 == Machine::MIPS.0 || machine.0 == Machine::SPARCV9.0 {
             self.r_type & 0xff
         } else {
             self.r_type
@@ -440,9 +445,10 @@ impl<'a> IntoIterator for &'a RelocationTable {
 /// Return the spec name of relocation type `r_type` for `machine`, for example
 /// `"R_X86_64_RELATIVE"`.
 ///
-/// The lists are complete for x86-64, i386, `AArch64`, Arm and RISC-V, and hold the common
-/// types for PowerPC, PowerPC64, S/390, MIPS and `LoongArch`. For ELF64 MIPS, give one type
-/// byte (`r_type & 0xff` of a [`Relocation`]). Return `None` for an unknown machine or type.
+/// The lists follow the processor ABIs and the LLVM lists. They include the GNU extensions,
+/// for example `R_PPC64_JMP_IREL` and `R_SPARC_IRELATIVE`. The SPARC list applies to
+/// `EM_SPARC`, `EM_SPARC32PLUS` and `EM_SPARCV9`. For ELF64 MIPS, give one type byte
+/// (`r_type & 0xff` of a [`Relocation`]). Return `None` for an unknown machine or type.
 #[must_use]
 pub const fn relocation_type_name(machine: Machine, r_type: u32) -> Option<&'static str> {
     match machine {
@@ -456,6 +462,8 @@ pub const fn relocation_type_name(machine: Machine, r_type: u32) -> Option<&'sta
         Machine::S390 => s390::name(r_type),
         Machine::MIPS => mips::name(r_type),
         Machine::LOONGARCH => loongarch::name(r_type),
+        Machine::SPARC | Machine::SPARC32PLUS | Machine::SPARCV9 => sparc::name(r_type),
+        Machine::HEXAGON => hexagon::name(r_type),
         _ => None,
     }
 }
@@ -478,6 +486,8 @@ pub const fn relative_type(machine: Machine) -> Option<u32> {
         Machine::PPC64 => Some(ppc64::R_PPC64_RELATIVE),
         Machine::S390 => Some(s390::R_390_RELATIVE),
         Machine::LOONGARCH => Some(loongarch::R_LARCH_RELATIVE),
+        Machine::SPARC | Machine::SPARC32PLUS | Machine::SPARCV9 => Some(sparc::R_SPARC_RELATIVE),
+        Machine::HEXAGON => Some(hexagon::R_HEX_RELATIVE),
         _ => None,
     }
 }
@@ -485,7 +495,7 @@ pub const fn relative_type(machine: Machine) -> Option<u32> {
 /// Return the indirect relative relocation type of `machine` (the resolver result of `B + A`),
 /// for example `R_X86_64_IRELATIVE`.
 ///
-/// Return `None` for MIPS and for a machine that this crate does not know.
+/// Return `None` for MIPS and Hexagon, and for a machine that this crate does not know.
 #[must_use]
 pub const fn irelative_type(machine: Machine) -> Option<u32> {
     match machine {
@@ -498,6 +508,7 @@ pub const fn irelative_type(machine: Machine) -> Option<u32> {
         Machine::PPC64 => Some(ppc64::R_PPC64_IRELATIVE),
         Machine::S390 => Some(s390::R_390_IRELATIVE),
         Machine::LOONGARCH => Some(loongarch::R_LARCH_IRELATIVE),
+        Machine::SPARC | Machine::SPARC32PLUS | Machine::SPARCV9 => Some(sparc::R_SPARC_IRELATIVE),
         _ => None,
     }
 }

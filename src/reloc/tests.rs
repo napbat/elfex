@@ -383,6 +383,9 @@ fn type_names_and_helpers() {
         Machine::PPC64,
         Machine::S390,
         Machine::LOONGARCH,
+        Machine::SPARC,
+        Machine::SPARC32PLUS,
+        Machine::SPARCV9,
     ] {
         let relative = relocation_type_name(machine, relative_type(machine).unwrap()).unwrap();
         assert!(relative.ends_with("_RELATIVE"), "{relative}");
@@ -390,6 +393,68 @@ fn type_names_and_helpers() {
         assert!(irelative.ends_with("_IRELATIVE"), "{irelative}");
     }
     assert_eq!(irelative_type(Machine::MIPS), None);
+    assert_eq!(
+        relocation_type_name(Machine::HEXAGON, relative_type(Machine::HEXAGON).unwrap()),
+        Some("R_HEX_RELATIVE")
+    );
+    assert_eq!(irelative_type(Machine::HEXAGON), None);
+}
+
+#[test]
+fn s390_types_have_the_abi_values() {
+    // Regression: R_390_PC16DBL and R_390_PLT16DBL had the values of R_390_PC16 and
+    // R_390_PC16DBL.
+    assert_eq!(s390::R_390_PC16, 16);
+    assert_eq!(s390::R_390_PC16DBL, 17);
+    assert_eq!(s390::R_390_PLT16DBL, 18);
+    assert_eq!(relocation_type_name(Machine::S390, 16), Some("R_390_PC16"));
+    assert_eq!(
+        relocation_type_name(Machine::S390, 17),
+        Some("R_390_PC16DBL")
+    );
+    assert_eq!(
+        relocation_type_name(Machine::S390, 18),
+        Some("R_390_PLT16DBL")
+    );
+    assert_eq!(
+        relocation_type_name(Machine::S390, 13),
+        Some("R_390_GOTOFF32")
+    );
+}
+
+#[test]
+fn toolchain_relocation_types_have_names() {
+    // Regression: these types occur in clang output, and had no names.
+    let types = [
+        (Machine::MIPS, 42, "R_MIPS_TLS_GD"),
+        (Machine::PPC, 79, "R_PPC_GOT_TLSGD16"),
+        (Machine::PPC, 95, "R_PPC_TLSGD"),
+        (Machine::PPC64, 48, "R_PPC64_TOC16_LO"),
+        (Machine::PPC64, 50, "R_PPC64_TOC16_HA"),
+        (Machine::PPC64, 252, "R_PPC64_REL16_HA"),
+        (Machine::S390, 38, "R_390_TLS_GDCALL"),
+        (Machine::S390, 41, "R_390_TLS_GD64"),
+        (Machine::S390, 53, "R_390_TLS_LDO64"),
+        (Machine::LOONGARCH, 97, "R_LARCH_TLS_GD_PC_HI20"),
+        (Machine::SPARCV9, 17, "R_SPARC_PC22"),
+        (Machine::SPARC, 22, "R_SPARC_RELATIVE"),
+        (Machine::HEXAGON, 35, "R_HEX_RELATIVE"),
+        (Machine::HEXAGON, 16, "R_HEX_B32_PCREL_X"),
+        (Machine::AARCH64, 0xe201, "R_AARCH64_AUTH_GLOB_DAT"),
+        (Machine::ARM, 163, "R_ARM_FUNCDESC"),
+    ];
+    for (machine, r_type, name) in types {
+        assert_eq!(
+            relocation_type_name(machine, r_type),
+            Some(name),
+            "{machine} {r_type}"
+        );
+    }
+    // ELF64 SPARC keeps additional data in the upper 24 bits of the type.
+    let olo10 = Relocation::with_addend(0, 1, (0x123 << 8) | sparc::R_SPARC_OLO10, 0);
+    assert_eq!(olo10.type_name(Machine::SPARCV9), Some("R_SPARC_OLO10"));
+    assert!(Relocation::new(0, 0, 22).is_relative(Machine::SPARCV9));
+    assert!(Relocation::new(0, 0, 35).is_relative(Machine::HEXAGON));
 }
 
 #[test]
