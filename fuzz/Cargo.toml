@@ -61,3 +61,10 @@ path = "fuzz_targets/fuzz-elf-file.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz-elf-edit"
+path = "fuzz_targets/fuzz-elf-edit.rs"
+test = false
+doc = false
+bench = false
