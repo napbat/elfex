@@ -2,7 +2,6 @@
 //! validate it.
 
 use super::{ElfImage, zeroed};
-use crate::elf::validate::validate_headers;
 use crate::header::FileHeader;
 use crate::prelude::*;
 use crate::program::{PN_XNUM, ProgramHeader};
@@ -202,9 +201,7 @@ impl ElfImage {
     /// the file do not occur.
     #[must_use]
     pub fn validate(&self) -> ValidationResult {
-        let mut result = ValidationResult::new();
-        validate_headers(&self.headers(), None, &mut result);
-        result
+        self.headers().validate(None)
     }
 }
 

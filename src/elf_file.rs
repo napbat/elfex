@@ -469,9 +469,7 @@ impl ElfFile {
     /// Check the headers against the file and return all issues.
     #[must_use]
     pub fn validate(&self) -> ValidationResult {
-        let mut result = ValidationResult::new();
-        crate::elf::validate::validate_headers(&self.headers, Some(self.file_size()), &mut result);
-        result
+        self.headers.validate(Some(self.file_size()))
     }
 
     /// Return the section header at `index`, or an `InvalidSection` error.

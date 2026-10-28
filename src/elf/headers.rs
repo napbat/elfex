@@ -1,5 +1,6 @@
 //! Parse [`ElfHeaders`] and translate addresses with the program headers.
 
+use super::validate::validate_headers;
 use super::{ElfHeaders, MAX_UNSIZED_TABLE_ENTRIES, SourceLayout};
 use crate::endian::Encoding;
 use crate::header::{FileHeader, FileType, Machine};
@@ -8,6 +9,7 @@ use crate::prelude::*;
 use crate::program::{PN_XNUM, ProgramHeader, SegmentType};
 use crate::reader::{ReadAt, SliceReader};
 use crate::section::{SHN_XINDEX, SectionHeader, SectionType};
+use crate::validation::ValidationResult;
 use crate::{Error, Result};
 
 #[cfg(feature = "std")]
@@ -339,6 +341,37 @@ impl ElfHeaders {
                 vaddr.checked_sub(self.image_origin()?)
             }
         }
+    }
+
+    /// Check the file header, the program headers and the section headers, and return all
+    /// issues.
+    ///
+    /// `file_size` is the size of the raw file. With `None`, the checks against the end of the
+    /// file do not occur: use `None` for headers from a loader-mapped image.
+    /// [`ElfFile::validate`](crate::ElfFile::validate) and
+    /// [`ElfImage::validate`](crate::ElfImage::validate) make the same checks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use elfex::{BuilderSection, ElfBuilder, ElfHeaders, Encoding};
+    ///
+    /// let bytes = ElfBuilder::new(Encoding::ELF64_LE)
+    ///     .add_section(BuilderSection::progbits(".comment", 0, b"elfex\0".to_vec()))
+    ///     .try_build()?
+    ///     .try_build()?;
+    /// let headers = ElfHeaders::from_slice(&bytes)?;
+    /// let size = u64::try_from(bytes.len()).expect("the size fits in u64");
+    /// assert!(headers.validate(Some(size)).is_ok());
+    /// // The section header table is past the end of a shorter file.
+    /// assert!(headers.validate(Some(size / 2)).has_errors());
+    /// # Ok::<(), elfex::Error>(())
+    /// ```
+    #[must_use]
+    pub fn validate(&self, file_size: Option<u64>) -> ValidationResult {
+        let mut result = ValidationResult::new();
+        validate_headers(self, file_size, &mut result);
+        result
     }
 }
 
