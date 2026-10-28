@@ -72,7 +72,7 @@ fn default_bucket_count_matches_gnu_ld() {
 fn sysv_round_trip() {
     for encoding in ENCODINGS {
         for nbucket in [0, 1, 3, 20] {
-            let table = SysvHashTable::build(&NAMES, nbucket).unwrap();
+            let table = SysvHashTable::try_build(&NAMES, nbucket).unwrap();
             assert_eq!(table.symbol_count(), 9);
             let bytes = table.write(encoding, 4).unwrap();
             assert_eq!(bytes.len(), (2 + table.buckets.len() + 9) * 4);
@@ -89,7 +89,7 @@ fn sysv_round_trip() {
 
 #[test]
 fn sysv_header_layout() {
-    let table = SysvHashTable::build(&NAMES, 3).unwrap();
+    let table = SysvHashTable::try_build(&NAMES, 3).unwrap();
     let bytes = table.write(Encoding::ELF32_BE, 4).unwrap();
     assert_eq!(bytes[..8], [0, 0, 0, 3, 0, 0, 0, 9]);
 }
@@ -97,13 +97,13 @@ fn sysv_header_layout() {
 #[test]
 fn sysv_lookup_finds_first_duplicate() {
     let names: [&[u8]; 4] = [b"", b"dup", b"other", b"dup"];
-    let table = SysvHashTable::build(&names, 1).unwrap();
+    let table = SysvHashTable::try_build(&names, 1).unwrap();
     assert_eq!(table.lookup(b"dup", name_of(&names)), Some(1));
 }
 
 #[test]
 fn sysv_empty_table() {
-    let table = SysvHashTable::build(&[], 0).unwrap();
+    let table = SysvHashTable::try_build(&[], 0).unwrap();
     assert_eq!(table.symbol_count(), 0);
     let bytes = table.write(Encoding::ELF64_LE, 4).unwrap();
     let parsed = SysvHashTable::parse(&bytes, Encoding::ELF64_LE, 4).unwrap();
@@ -112,7 +112,7 @@ fn sysv_empty_table() {
 
 #[test]
 fn sysv_eight_byte_entries() {
-    let table = SysvHashTable::build(&NAMES, 0).unwrap();
+    let table = SysvHashTable::try_build(&NAMES, 0).unwrap();
     for encoding in [Encoding::ELF64_LE, Encoding::ELF64_BE] {
         let bytes = table.write(encoding, 8).unwrap();
         assert_eq!(bytes.len(), (2 + 3 + 9) * 8);
@@ -129,7 +129,7 @@ fn sysv_eight_byte_entries() {
 
 #[test]
 fn sysv_rejects_bad_entry_size() {
-    let table = SysvHashTable::build(&NAMES, 0).unwrap();
+    let table = SysvHashTable::try_build(&NAMES, 0).unwrap();
     let bytes = table.write(Encoding::ELF32_LE, 4).unwrap();
     assert_invalid_table(SysvHashTable::parse(&bytes, Encoding::ELF32_LE, 2));
     assert_invalid_table(table.write(Encoding::ELF32_LE, 16));
@@ -137,7 +137,7 @@ fn sysv_rejects_bad_entry_size() {
 
 #[test]
 fn sysv_rejects_truncated_data() {
-    let table = SysvHashTable::build(&NAMES, 0).unwrap();
+    let table = SysvHashTable::try_build(&NAMES, 0).unwrap();
     let mut bytes = table.write(Encoding::ELF32_LE, 4).unwrap();
     bytes.pop();
     assert_invalid_table(SysvHashTable::parse(&bytes, Encoding::ELF32_LE, 4));
@@ -182,7 +182,7 @@ fn reordered<'a>(hashed: &[&'a [u8]], order: &[usize]) -> Vec<&'a [u8]> {
 }
 
 fn check_gnu_round_trip(hashed: &[&[u8]], encoding: Encoding, nbuckets: u32) {
-    let (table, order) = GnuHashTable::build(hashed, 1, encoding, nbuckets).unwrap();
+    let (table, order) = GnuHashTable::try_build(hashed, 1, encoding, nbuckets).unwrap();
     let mut sorted = order.clone();
     sorted.sort_unstable();
     assert_eq!(sorted, (0..hashed.len()).collect::<Vec<_>>());
@@ -227,7 +227,7 @@ fn gnu_round_trip_many_symbols() {
     for encoding in ENCODINGS {
         check_gnu_round_trip(&hashed, encoding, 0);
     }
-    let (table, _) = GnuHashTable::build(&hashed, 1, Encoding::ELF32_LE, 0).unwrap();
+    let (table, _) = GnuHashTable::try_build(&hashed, 1, Encoding::ELF32_LE, 0).unwrap();
     assert_eq!(table.buckets.len(), 97);
     assert_eq!(table.bloom.len(), 64);
     assert_eq!(table.bloom_shift, 11);
@@ -275,7 +275,7 @@ fn gnu_bloom_filter_rejects_names() {
 #[test]
 fn gnu_rejects_truncated_chains() {
     for encoding in ENCODINGS {
-        let (table, _) = GnuHashTable::build(&NAMES[1..], 1, encoding, 0).unwrap();
+        let (table, _) = GnuHashTable::try_build(&NAMES[1..], 1, encoding, 0).unwrap();
         let mut bytes = table.write(encoding).unwrap();
         bytes.truncate(bytes.len() - 4);
         assert_invalid_table(GnuHashTable::parse(&bytes, encoding));
@@ -299,7 +299,7 @@ fn gnu_rejects_truncated_header_parts() {
 #[test]
 fn gnu_empty_table() {
     for encoding in ENCODINGS {
-        let (table, order) = GnuHashTable::build(&[], 3, encoding, 0).unwrap();
+        let (table, order) = GnuHashTable::try_build(&[], 3, encoding, 0).unwrap();
         assert_eq!(order, Vec::<usize>::new());
         assert_eq!(table.buckets, [0]);
         assert_eq!(table.chains, Vec::<u32>::new());
@@ -332,13 +332,38 @@ fn gnu_lookup_with_empty_bloom_filter() {
 
 #[test]
 fn gnu_build_rejects_bad_input() {
-    assert_invalid_table(GnuHashTable::build(&NAMES[1..], 0, Encoding::ELF32_LE, 0));
-    let error = GnuHashTable::build(&NAMES[1..], u32::MAX, Encoding::ELF32_LE, 0).unwrap_err();
+    assert_invalid_table(GnuHashTable::try_build(
+        &NAMES[1..],
+        0,
+        Encoding::ELF32_LE,
+        0,
+    ));
+    let error = GnuHashTable::try_build(&NAMES[1..], u32::MAX, Encoding::ELF32_LE, 0).unwrap_err();
     assert!(matches!(error.kind(), ErrorKind::ValueOutOfRange(_)));
 }
 
 #[test]
 fn gnu_write_rejects_other_class() {
-    let (table, _) = GnuHashTable::build(&NAMES[1..], 1, Encoding::ELF64_LE, 0).unwrap();
+    let (table, _) = GnuHashTable::try_build(&NAMES[1..], 1, Encoding::ELF64_LE, 0).unwrap();
     assert_invalid_table(table.write(Encoding::ELF32_LE));
+}
+
+#[test]
+fn build_returns_the_try_build_table() {
+    assert_eq!(
+        SysvHashTable::build(&NAMES, 3),
+        SysvHashTable::try_build(&NAMES, 3).unwrap()
+    );
+    for encoding in [Encoding::ELF32_BE, Encoding::ELF64_LE] {
+        assert_eq!(
+            GnuHashTable::build(&NAMES[1..], 1, encoding, 2),
+            GnuHashTable::try_build(&NAMES[1..], 1, encoding, 2).unwrap()
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "use try_build()")]
+fn gnu_build_panics_on_a_null_symbol() {
+    let _ = GnuHashTable::build(&NAMES[1..], 0, Encoding::ELF64_LE, 0);
 }

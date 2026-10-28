@@ -240,7 +240,7 @@ impl GnuHashTable {
     ///   and `names` is not empty: the null symbol cannot be in the table.
     /// - Return [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange) if the last
     ///   hashed symbol index does not fit in 32 bits.
-    pub fn build(
+    pub fn try_build(
         names: &[&[u8]],
         symoffset: u32,
         encoding: Encoding,
@@ -293,6 +293,27 @@ impl GnuHashTable {
             chains,
         };
         Ok((table, order))
+    }
+
+    /// Build a GNU hash table for the hashed symbols with the names `names`, and return the
+    /// new symbol order.
+    ///
+    /// [`Self::try_build`] describes the arguments, the table and the order.
+    ///
+    /// # Panics
+    ///
+    /// Panic if [`Self::try_build`] returns an error: `symoffset` is 0 and `names` is not
+    /// empty, or the last hashed symbol index does not fit in 32 bits. Use `try_build` to
+    /// handle invalid input.
+    #[must_use]
+    pub fn build(
+        names: &[&[u8]],
+        symoffset: u32,
+        encoding: Encoding,
+        nbuckets: u32,
+    ) -> (Self, Vec<usize>) {
+        Self::try_build(names, symoffset, encoding, nbuckets)
+            .expect("invalid GNU hash table: use try_build() to handle invalid input")
     }
 }
 

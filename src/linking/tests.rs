@@ -186,7 +186,7 @@ fn elf32_symbols_with_sysv_hash() {
         ],
     };
     let hash_names: [&[u8]; 4] = [b"", b"foo", b"bar", b"hidden"];
-    let hash = SysvHashTable::build(&hash_names, 0).unwrap();
+    let hash = SysvHashTable::try_build(&hash_names, 0).unwrap();
     let mut flat = Flat::new(encoding, Machine::PPC);
     let strtab = flat.place(strings.as_bytes());
     let symtab = flat.place(&symbols.write(encoding).unwrap());
@@ -236,7 +236,7 @@ fn elf64_symbol_count_from_gnu_hash_and_relocations() {
         ),
         symbol(strings.add("baz").unwrap(), 0x1108, SymbolBinding::WEAK, 1),
     ];
-    let (gnu, order) = GnuHashTable::build(&hashed_names, 2, encoding, 0).unwrap();
+    let (gnu, order) = GnuHashTable::try_build(&hashed_names, 2, encoding, 0).unwrap();
     let mut symbols = vec![
         Symbol::default(),
         symbol(bar, 0, SymbolBinding::GLOBAL, SHN_UNDEF),
@@ -328,7 +328,7 @@ fn mips_symbol_count_from_symtabno() {
     };
     // The hash table covers only the first two symbols.
     let hash_names: [&[u8]; 2] = [b"", b"foo"];
-    let hash = SysvHashTable::build(&hash_names, 1).unwrap();
+    let hash = SysvHashTable::try_build(&hash_names, 1).unwrap();
     let mut flat = Flat::new(encoding, Machine::MIPS);
     let symtab = flat.place(&symbols.write(encoding).unwrap());
     let hash_address = flat.place(&hash.write(encoding, 4).unwrap());
@@ -441,7 +441,7 @@ fn versions_through_the_dynamic_table() {
     let bias = flat.pointer_bias;
     let strtab = flat.place(strings.as_bytes()) + bias;
     let symtab = flat.place(&symbols.write(encoding).unwrap()) + bias;
-    let hash = SysvHashTable::build(&hash_names, 1).unwrap();
+    let hash = SysvHashTable::try_build(&hash_names, 1).unwrap();
     let hash_address = flat.place(&hash.write(encoding, 4).unwrap()) + bias;
     let versym_address = flat.place(&versym.write(encoding)) + bias;
     let verdef = flat.place(&definitions.write(encoding).unwrap()) + bias;

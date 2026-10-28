@@ -175,7 +175,7 @@ fn symbols(spec: Spec, layout: &Layout) -> (SymbolTable, GnuHashTable, Vec<u32>,
     let data = layout.address(".data");
     let values = [text, data + 0x30, text + 8, text + 4];
     let defined_names: Vec<&[u8]> = DEFINED.iter().map(|name| name.as_bytes()).collect();
-    let (gnu_hash, order) = GnuHashTable::build(&defined_names, 3, spec.encoding, 0).unwrap();
+    let (gnu_hash, order) = GnuHashTable::try_build(&defined_names, 3, spec.encoding, 0).unwrap();
     let mut builder = SymbolTableBuilder::new(spec.encoding);
     for name in IMPORTS {
         builder.add(NewSymbol::new(
@@ -416,7 +416,7 @@ fn builder(spec: Spec, layout: &Layout) -> (ElfBuilder, Tables) {
                 .iter()
                 .map(|&p| DEFINED[usize::try_from(p).unwrap()].as_bytes()),
         );
-        SysvHashTable::build(&names, 0).unwrap()
+        SysvHashTable::try_build(&names, 0).unwrap()
     });
     let dynamic = dynamic(spec, layout, &mut strings, &relocation_data);
     let tables = Tables {

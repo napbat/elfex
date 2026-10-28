@@ -23,7 +23,7 @@
 //! let name_of = |index: u32| names.get(usize::try_from(index).ok()?).copied();
 //!
 //! let entry_size = sysv_hash_entry_size(Machine::X86_64, encoding.class);
-//! let table = SysvHashTable::build(&names, 0)?;
+//! let table = SysvHashTable::try_build(&names, 0)?;
 //! let bytes = table.write(encoding, entry_size)?;
 //! let parsed = SysvHashTable::parse(&bytes, encoding, entry_size)?;
 //! assert_eq!(parsed, table);
@@ -32,7 +32,7 @@
 //!
 //! // The GNU table hashes the symbols from index 1. It can reorder them: `order` gives the
 //! // old position of each hashed symbol.
-//! let (table, order) = GnuHashTable::build(&names[1..], 1, encoding, 0)?;
+//! let (table, order) = GnuHashTable::try_build(&names[1..], 1, encoding, 0)?;
 //! let mut sorted = vec![names[0]];
 //! sorted.extend(order.iter().map(|&position| names[1 + position]));
 //! let parsed = GnuHashTable::parse(&table.write(encoding)?, encoding)?;
@@ -296,7 +296,7 @@ impl SysvHashTable {
     ///
     /// Return [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange) if `names` has
     /// more than `u32::MAX` entries.
-    pub fn build(names: &[&[u8]], nbucket: u32) -> Result<Self> {
+    pub fn try_build(names: &[&[u8]], nbucket: u32) -> Result<Self> {
         len_u32(names.len(), "nchain")?;
         let nbucket = if nbucket == 0 {
             default_bucket_count(names.len())
@@ -314,5 +314,19 @@ impl SysvHashTable {
             }
         }
         Ok(Self { buckets, chains })
+    }
+
+    /// Build a System V hash table for the dynamic symbols with the names `names`.
+    ///
+    /// [`Self::try_build`] describes the arguments and the table.
+    ///
+    /// # Panics
+    ///
+    /// Panic if [`Self::try_build`] returns an error: `names` has more than `u32::MAX`
+    /// entries. Use `try_build` to handle invalid input.
+    #[must_use]
+    pub fn build(names: &[&[u8]], nbucket: u32) -> Self {
+        Self::try_build(names, nbucket)
+            .expect("invalid SysV hash table: use try_build() to handle invalid input")
     }
 }
