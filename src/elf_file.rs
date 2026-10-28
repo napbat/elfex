@@ -21,22 +21,29 @@
 //! - [`ElfFile::section_groups`] gives all `SHT_GROUP` sections, for example COMDAT groups.
 //! - [`ElfFile::section_data_by_name`] gives the bytes of a named section.
 //!
-//! # Example
+//! # Examples
 //!
-//! ```no_run
-//! use elfex::ElfFile;
+//! ```
+//! use elfex::section::SHF_ALLOC;
+//! use elfex::{BuilderSection, ElfBuilder, ElfFile, Encoding, NewSection, SectionType};
 //!
-//! # fn main() -> elfex::Result<()> {
-//! # let bytes: &[u8] = &[];
-//! let mut elf = ElfFile::parse(bytes)?;
-//! if let Some(section) = elf.section_by_name(".comment") {
-//!     println!("{} has {} bytes", section.name, section.data.len());
-//! }
-//! elf.set_entry_point(0x40_1000);
-//! let output = elf.try_build()?;
-//! # let _ = output;
-//! # Ok(())
-//! # }
+//! let bytes = ElfBuilder::new(Encoding::ELF64_LE)
+//!     .add_section(BuilderSection::progbits(".rodata", SHF_ALLOC, b"hello\0".to_vec()))
+//!     .add_section(BuilderSection::progbits(".comment", 0, b"GCC\0".to_vec()))
+//!     .try_build()?
+//!     .try_build()?;
+//!
+//! let mut file = ElfFile::parse(&bytes)?;
+//! let comment = file.section_by_name(".comment").expect("the file has .comment").index;
+//! file.set_section_data(comment, b"elfex\0".to_vec())?;
+//! file.add_section(NewSection::new(".elfex", SectionType::PROGBITS, vec![1, 2, 3]))?;
+//! file.set_entry_point(0x40_1000);
+//!
+//! let edited = ElfFile::parse(&file.try_build()?)?;
+//! assert_eq!(edited.section_data_by_name(".comment")?, Some(&b"elfex\0"[..]));
+//! assert_eq!(edited.section_data_by_name(".elfex")?, Some(&[1, 2, 3][..]));
+//! assert_eq!(edited.entry_point(), 0x40_1000);
+//! # Ok::<(), elfex::Error>(())
 //! ```
 
 use crate::elf::{ElfHeaders, SourceLayout};
@@ -72,6 +79,33 @@ pub use tables::{RelocationSection, SectionGroup};
 ///
 /// The round trip is lossless: for each input that parses, `ElfFile::parse(bytes)?.try_build()?`
 /// is equal to `bytes`.
+///
+/// # Examples
+///
+/// ```
+/// use elfex::section::{SHF_ALLOC, SHF_EXECINSTR};
+/// use elfex::{BuilderSection, ElfBuilder, ElfFile, Encoding, Machine, SectionType};
+///
+/// let bytes = ElfBuilder::new(Encoding::ELF64_LE)
+///     .machine(Machine::X86_64)
+///     .interpreter("/lib64/ld-linux-x86-64.so.2")
+///     .add_section(BuilderSection::progbits(".text", SHF_ALLOC | SHF_EXECINSTR, vec![0xc3]))
+///     .entry_in_section(".text", 0)
+///     .try_build()?
+///     .try_build()?;
+///
+/// let file = ElfFile::parse(&bytes)?;
+/// assert_eq!(file.machine(), Machine::X86_64);
+/// let text = file.section_by_name(".text").expect("the file has .text");
+/// assert_eq!(text.header.section_type, SectionType::PROGBITS);
+/// assert_eq!(text.data, [0xc3]);
+/// assert_eq!(file.entry_point(), text.header.addr);
+/// assert_eq!(file.interpreter()?.as_deref(), Some("/lib64/ld-linux-x86-64.so.2"));
+///
+/// // The round trip is lossless.
+/// assert_eq!(file.try_build()?, bytes);
+/// # Ok::<(), elfex::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElfFile {
     data: Vec<u8>,
