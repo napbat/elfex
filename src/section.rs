@@ -404,6 +404,30 @@ mod tests {
     }
 
     #[test]
+    fn flag_accessors_and_ranges() {
+        let compressed = SectionHeader {
+            section_type: SectionType::PROGBITS,
+            flags: SHF_COMPRESSED,
+            offset: 0x100,
+            size: 0x10,
+            ..SectionHeader::default()
+        };
+        assert!(compressed.is_compressed());
+        assert!(!compressed.is_alloc() && !compressed.is_writable());
+        assert_eq!(compressed.memory_range(), None);
+        assert_eq!(compressed.file_range(), Some(0x100..0x110));
+        let wrapping = SectionHeader {
+            flags: SHF_ALLOC,
+            addr: u64::MAX,
+            offset: u64::MAX,
+            ..compressed
+        };
+        assert!(!wrapping.is_compressed());
+        assert_eq!(wrapping.memory_range(), None);
+        assert_eq!(wrapping.file_range(), None);
+    }
+
+    #[test]
     fn compression_header_round_trips() {
         let header = CompressionHeader {
             compression_type: CompressionType::ZSTD,
