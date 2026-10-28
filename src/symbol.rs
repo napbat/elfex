@@ -372,11 +372,11 @@ impl SymbolTable {
             ))
             .in_structure(name));
         }
+        // Each chunk has at least the size of the structure, so `Symbol::parse` cannot fail.
         let symbols = bytes
             .chunks_exact(entry_size)
             .map(|chunk| Symbol::parse(chunk, encoding))
-            .collect::<Result<Vec<_>>>()
-            .map_err(|error| error.in_structure(name))?;
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self { symbols })
     }
 

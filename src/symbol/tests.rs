@@ -2,6 +2,7 @@ use super::*;
 use crate::ErrorKind;
 use crate::prelude::*;
 use crate::section::{SHN_ABS, SHN_COMMON};
+use crate::strtab::StringTable;
 
 const ENCODINGS: [Encoding; 4] = [
     Encoding::ELF32_LE,
@@ -380,4 +381,72 @@ fn builder_build_panics_on_invalid_input() {
         SymbolType::NOTYPE,
     ));
     let _ = builder.build();
+}
+
+#[test]
+fn parse_short_symbol_errors() {
+    for encoding in ENCODINGS {
+        let size = Symbol::size(encoding.class);
+        let err = Symbol::parse(&vec![0; size - 1], encoding).unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            ErrorKind::BufferTooSmall { expected, actual }
+                if *expected == size && *actual == size - 1
+        ));
+    }
+}
+
+fn names(strings: Option<&StringTable>) -> SymbolNames<'_> {
+    SymbolNames {
+        strings,
+        structure: "DT_STRTAB",
+        indices: None,
+        versym: None,
+        map: None,
+    }
+}
+
+#[test]
+fn describe_without_string_table_errors() {
+    let err = names(None).describe(1, sample_symbol()).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
+    assert_eq!(
+        err.context().unwrap().structure.as_deref(),
+        Some("DT_STRTAB")
+    );
+    // A symbol without a name needs no string table.
+    let unnamed = Symbol {
+        name: 0,
+        ..sample_symbol()
+    };
+    let named = names(None).describe(1, unnamed).unwrap();
+    assert_eq!(named.name, "");
+    assert_eq!(named.section_index, Some(5));
+}
+
+#[test]
+fn describe_bad_name_offset_errors() {
+    let strings = StringTable::parse(b"\0a\0");
+    let symbol = Symbol {
+        name: 7,
+        ..sample_symbol()
+    };
+    let err = names(Some(&strings)).describe(1, symbol).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
+    let context = err.context().unwrap();
+    assert_eq!(context.structure.as_deref(), Some("DT_STRTAB"));
+    assert_eq!(context.file_offset, Some(7));
+}
+
+/// A symbol index after `u32::MAX` has no `NamedSymbol::index`. Only 64-bit targets have
+/// such a `usize`.
+#[test]
+fn describe_index_after_u32_errors() {
+    let strings = StringTable::parse(b"\0a\0");
+    if let Ok(index) = usize::try_from(u64::from(u32::MAX) + 1) {
+        let err = names(Some(&strings))
+            .describe(index, sample_symbol())
+            .unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
+    }
 }
