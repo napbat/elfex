@@ -149,7 +149,10 @@ runtime base. It applies the relative relocations: `R_*_RELATIVE` in the `RELA`,
 tables, and all `RELR` entries. It does not apply symbol relocations.
 
 `ElfImage::try_build()` writes a raw file without sections from the segments. Use it to dump a
-mapped image to a file.
+mapped image to a file. For a dump of a live process, first call
+`ElfImage::restore_dynamic_pointers()`. It writes the virtual addresses of the file back into
+the `d_ptr` entries that glibc changed (see the caution below). Then other tools can read the
+dynamic table of the dump. The `dump-process` example does this.
 
 > **Caution:** In a loaded process, glibc writes runtime addresses into many `d_ptr` entries
 > of `.dynamic` (but not on MIPS and RISC-V). Parse such an image with a runtime base
@@ -212,7 +215,11 @@ does the same layout-aware translation as the image parser. It does not read the
 - `set_section_data` replaces the data of a section. Smaller data stays in place. Larger data
   of a section without `SHF_ALLOC` moves to the end of the file.
 - `add_section` adds a section without `SHF_ALLOC`, and adds its name to `.shstrtab`.
-- `remove_section` removes a section and renumbers the section links.
+- `remove_section` removes a section and renumbers the sections after it: the section links,
+  `e_shstrndx`, the `st_shndx` values of all symbol tables (also `SHT_SYMTAB_SHNDX`) and the
+  section group members. An `STT_SECTION` symbol of the removed section becomes undefined.
+  The method refuses to remove a section that a link, another symbol, a relocation or a group
+  signature uses.
 - `add_load_segment` adds a `PT_LOAD` segment. If the program header table cannot grow in
   place, the method moves it to a new segment, as patchelf does.
 - `set_interpreter` changes the `PT_INTERP` path, in place or in a new segment.
@@ -284,12 +291,13 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `symbol_list()` | The static symbols with names and sections (`NamedSymbol`). `SHT_SYMTAB_SHNDX` gives the extended section indices |
 | `lookup_symbol(name)` | A static symbol, or else a dynamic symbol, with the name |
 | `section_relocations(index)`, `relocation_sections()` | One `SHT_REL` or `SHT_RELA` section, or all of them with their target sections (`RelocationSection`) |
-| `section_groups()` | The `SHT_GROUP` sections with their flags, signatures and members (`SectionGroup`) |
+| `section_groups()` | The `SHT_GROUP` sections with their flags, signatures and members (`SectionGroup`). `GroupTable` parses and writes the data of one group |
 | `section_data_by_name(name)` | The bytes of the first section with the name |
 | `to_image()` | The `ElfImage` of the file as it is now, with all edits |
 
 `Relocation::type_name(machine)` gives the spec name of a relocation type, for example
-`R_X86_64_RELATIVE`.
+`R_X86_64_RELATIVE`. `Note::type_name()` gives the spec name of a note type for its owner,
+for example `NT_GNU_BUILD_ID`.
 
 ```rust,no_run
 use elfex::ElfFile;
@@ -327,9 +335,13 @@ for group in file.section_groups()? {
 
 Each table type also parses from bytes and serializes to bytes. For example,
 `SymbolTable::parse(bytes, encoding)` parses the contiguous bytes of a symbol table. The table
-modules (`dynamic`, `symbol`, `strtab`, `reloc`, `note`, `hash`, `version` and `eh_frame`)
-also hold the constants of each area, and the builders (`SymbolTableBuilder`,
-`StringTableBuilder`).
+modules (`dynamic`, `symbol`, `strtab`, `reloc`, `note`, `hash`, `version`, `group` and
+`eh_frame`) also hold the constants of each area, and the builders (`SymbolTableBuilder`,
+`StringTableBuilder`, `SysvHashTable::try_build` and `GnuHashTable::try_build`). Each `build`
+function panics on invalid input. Use the matching `try_build` function to get a `Result`.
+
+`ElfHeaders::validate(file_size)` checks only the headers, without the file data. Use it after
+`ElfHeaders::from_slice` or `ElfHeaders::read_from`.
 
 ## Sequential and positional I/O
 
@@ -390,6 +402,27 @@ The builder puts the sections in `PT_LOAD` segments by their flags: read-only, e
 and writable. It adds `PT_PHDR`, `PT_INTERP` and `PT_GNU_STACK`. Use
 `add_segment_for_section` for other segments, for example `PT_DYNAMIC` or `PT_NOTE`. The
 builder returns an `ElfFile`, so you can edit the result further.
+
+Section data that holds addresses (for example `.dynamic` or relocated code) needs the layout
+before the build. `ElfBuilder::try_layout()` plans the layout without the file bytes, and
+returns the address, file offset and size of each section (`BuilderLayout::section(name)`) and
+the entry point. The layout depends only on the builder settings and on the type, flags, size,
+alignment and order of the sections. Thus, plan with placeholder data of the final size, make
+the final data from the addresses, and then build:
+
+```rust
+use elfex::section::{SHF_ALLOC, SHF_WRITE};
+use elfex::{BuilderSection, ElfBuilder, Encoding};
+
+let pointer = |data| BuilderSection::progbits(".pointer", SHF_ALLOC | SHF_WRITE, data);
+let builder = ElfBuilder::new(Encoding::ELF64_LE)
+    .add_section(BuilderSection::progbits(".rodata", SHF_ALLOC, b"hello\0".to_vec()));
+let layout = builder.clone().add_section(pointer(vec![0; 8])).try_layout()?;
+let rodata = layout.section(".rodata").expect("the layout has .rodata").addr;
+let file = builder.add_section(pointer(rodata.to_le_bytes().to_vec())).try_build()?;
+assert_eq!(file.section_by_name(".rodata").map(|section| section.header.addr), Some(rodata));
+# Ok::<(), elfex::Error>(())
+```
 
 ## Examples
 
