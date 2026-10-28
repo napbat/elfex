@@ -66,7 +66,7 @@ pub use pointer::{
 use crate::endian::Encoding;
 use crate::prelude::*;
 use crate::{Error, Result};
-use pointer::address_at;
+use pointer::{address_at, read_raw, wrap_address};
 
 /// A Common Information Entry (CIE) in `.eh_frame`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -361,9 +361,7 @@ fn parse_fde(
     let pc_begin = read_encoded_pointer(record, &mut pos, encoding, pe, field, &bases)?
         .ok_or_else(|| frame_error("FDE pc_begin is omitted", offset))?;
     // The address range uses the value format only, without the base.
-    let field = address_at(encoding, section_address, pos);
-    let pc_range = read_encoded_pointer(record, &mut pos, encoding, pe & 0x0f, field, &bases)?
-        .ok_or_else(|| frame_error("FDE pc_range is omitted", offset))?;
+    let pc_range = wrap_address(encoding, read_raw(record, &mut pos, encoding, pe & 0x0f)?);
     let mut lsda = None;
     if cie.augmentation.starts_with('z') {
         let length = read_uleb128(record, &mut pos)?;

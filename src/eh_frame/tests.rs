@@ -1,3 +1,5 @@
+mod pointer;
+
 use super::*;
 use crate::ErrorKind;
 use crate::prelude::*;
@@ -228,7 +230,7 @@ fn bad_cie_version_errors() {
     let encoding = Encoding::ELF64_LE;
     let mut bytes = build(encoding, DW_EH_PE_ABSPTR);
     bytes[8] = 2;
-    assert!(EhFrame::parse(&bytes, encoding, SECTION).is_err());
+    invalid_record(&bytes, encoding, 0);
 }
 
 fn sample_hdr() -> EhFrameHdr {
@@ -314,6 +316,25 @@ fn eh_frame_hdr_without_table() {
 }
 
 #[test]
+fn eh_frame_hdr_malformed_pointers() {
+    let encoding = Encoding::ELF64_BE;
+    let check = |bytes: &[u8]| {
+        let err = EhFrameHdr::parse(bytes, encoding, SECTION).unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)), "{err:?}");
+        assert_eq!(
+            err.context().unwrap().structure.as_deref(),
+            Some(".eh_frame_hdr")
+        );
+    };
+    check(&[1, DW_EH_PE_OMIT, DW_EH_PE_OMIT, DW_EH_PE_OMIT]);
+    // The table size of `u64::MAX` FDEs overflows.
+    let mut bytes = vec![1, DW_EH_PE_UDATA4, DW_EH_PE_UDATA8, DW_EH_PE_UDATA4];
+    encoding.write_u32(&mut bytes, 0x3000);
+    encoding.write_u64(&mut bytes, u64::MAX);
+    check(&bytes);
+}
+
+#[test]
 fn eh_frame_hdr_elf32_wraps() {
     let encoding = Encoding::ELF32_BE;
     let hdr = EhFrameHdr {
@@ -330,140 +351,139 @@ fn eh_frame_hdr_elf32_wraps() {
     assert_eq!(parsed.entries, hdr.entries);
 }
 
-#[test]
-fn uleb128_values() {
-    let mut offset = 0;
-    assert_eq!(
-        read_uleb128(&[0xe5, 0x8e, 0x26], &mut offset).unwrap(),
-        624_485
-    );
-    assert_eq!(offset, 3);
-    let mut max = vec![0xff; 9];
-    max.push(0x01);
-    let mut offset = 0;
-    assert_eq!(read_uleb128(&max, &mut offset).unwrap(), u64::MAX);
+/// Return an `.eh_frame` with one CIE whose body after the CIE id is `cie_body`, then one FDE
+/// for each entry of `fde_bodies` (the bytes after the CIE pointer).
+fn records(encoding: Encoding, cie_body: &[u8], fde_bodies: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
-    write_uleb128(&mut out, u64::MAX);
-    assert_eq!(out, max);
-}
-
-#[test]
-fn uleb128_overflow_errors() {
-    let mut too_big = vec![0xff; 9];
-    too_big.push(0x02);
-    let mut offset = 0;
-    assert!(read_uleb128(&too_big, &mut offset).is_err());
-    assert_eq!(offset, 0);
-    let mut too_long = vec![0x80; 10];
-    too_long.push(0x01);
-    assert!(read_uleb128(&too_long, &mut 0).is_err());
-    assert!(read_uleb128(&[0x80, 0x80], &mut 0).is_err());
-}
-
-#[test]
-fn sleb128_values() {
-    for value in [
-        0,
-        1,
-        -1,
-        63,
-        -64,
-        64,
-        -65,
-        624_485,
-        -123_456,
-        i64::MIN,
-        i64::MAX,
-    ] {
-        let mut out = Vec::new();
-        write_sleb128(&mut out, value);
-        let mut offset = 0;
-        assert_eq!(read_sleb128(&out, &mut offset).unwrap(), value, "{value}");
-        assert_eq!(offset, out.len());
+    encoding.write_u32(&mut out, len_u32(cie_body.len() + 4));
+    encoding.write_u32(&mut out, 0);
+    out.extend_from_slice(cie_body);
+    for body in fde_bodies {
+        let start = out.len();
+        encoding.write_u32(&mut out, len_u32(body.len() + 4));
+        encoding.write_u32(&mut out, len_u32(start + 4));
+        out.extend_from_slice(body);
     }
-    let mut min = vec![0x80; 9];
-    min.push(0x7f);
-    assert_eq!(read_sleb128(&min, &mut 0).unwrap(), i64::MIN);
+    out
 }
 
-#[test]
-fn sleb128_overflow_errors() {
-    let mut too_big = vec![0x80; 9];
-    too_big.push(0x01);
-    assert!(read_sleb128(&too_big, &mut 0).is_err());
-    let mut too_long = vec![0xff; 10];
-    too_long.push(0x00);
-    assert!(read_sleb128(&too_long, &mut 0).is_err());
-    assert!(read_sleb128(&[0xff], &mut 0).is_err());
+/// Check that `EhFrame::parse` fails with `InvalidTable` in the `.eh_frame` structure at the
+/// record offset `offset`.
+fn invalid_record(bytes: &[u8], encoding: Encoding, offset: u64) {
+    let err = EhFrame::parse(bytes, encoding, SECTION).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)), "{err:?}");
+    let context = err.context().unwrap();
+    assert_eq!(context.structure.as_deref(), Some(".eh_frame"));
+    assert_eq!(context.file_offset, Some(offset));
 }
 
-#[test]
-fn omit_returns_none() {
-    let bases = PointerBases::default();
-    let mut offset = 0;
-    let value = read_encoded_pointer(
-        &[],
-        &mut offset,
-        Encoding::ELF64_LE,
-        DW_EH_PE_OMIT,
-        0,
-        &bases,
-    )
-    .unwrap();
-    assert_eq!(value, None);
-    assert_eq!(offset, 0);
+/// Check that `EhFrame::parse` fails with `BufferTooSmall`.
+fn buffer_too_small(bytes: &[u8], encoding: Encoding) {
+    let err = EhFrame::parse(bytes, encoding, SECTION).unwrap_err();
+    assert!(
+        matches!(err.kind(), ErrorKind::BufferTooSmall { .. }),
+        "{err:?}"
+    );
 }
 
+/// The old GCC `eh` augmentation has a class-sized pointer before the alignment factors.
 #[test]
-fn encoded_pointer_applications() {
-    let encoding = Encoding::ELF32_LE;
-    let bases = PointerBases {
-        pc: None,
-        text: Some(0x100),
-        data: Some(0x200),
-        func: None,
+fn parse_eh_augmentation() {
+    for encoding in ALL {
+        let mut cie = vec![1];
+        cie.extend_from_slice(b"eh\0");
+        encoding.write_addr(&mut cie, 0x1234).unwrap();
+        cie.extend_from_slice(&[1, 0x78, 16]);
+        cie.extend_from_slice(&CIE_INSNS);
+        let mut fde = Vec::new();
+        encoding.write_addr(&mut fde, 0x1000).unwrap();
+        encoding.write_addr(&mut fde, 0x40).unwrap();
+        fde.extend_from_slice(&FDE_INSNS);
+        let entries = EhFrame::parse(&records(encoding, &cie, &[&fde]), encoding, SECTION).unwrap();
+        let EhFrameEntry::Cie(cie) = &entries[0] else {
+            panic!("expected a CIE");
+        };
+        assert_eq!(cie.augmentation, "eh");
+        assert_eq!(cie.return_address_register, 16);
+        assert_eq!(cie.initial_instructions, CIE_INSNS);
+        let EhFrameEntry::Fde(fde) = &entries[1] else {
+            panic!("expected an FDE");
+        };
+        assert_eq!((fde.pc_begin, fde.pc_range), (0x1000, 0x40));
+        assert_eq!(fde.lsda, None);
+        assert_eq!(fde.instructions, FDE_INSNS);
+
+        // The `eh` pointer does not fit in the CIE.
+        let mut short = vec![1];
+        short.extend_from_slice(b"eh\0");
+        short.extend_from_slice(&[0; 3]);
+        buffer_too_small(&records(encoding, &short, &[]), encoding);
+    }
+}
+
+/// A version 4 CIE has the address size and the segment selector size.
+#[test]
+fn parse_cie_version_4() {
+    let encoding = Encoding::ELF64_LE;
+    let cie = [4, 0, 8, 0, 1, 0x78, 16];
+    let fde = [0x00, 0x10, 0, 0, 0, 0, 0, 0, 0x20, 0, 0, 0, 0, 0, 0, 0];
+    let entries = EhFrame::parse(&records(encoding, &cie, &[&fde]), encoding, SECTION).unwrap();
+    let EhFrameEntry::Cie(cie) = &entries[0] else {
+        panic!("expected a CIE");
     };
-    let bytes = [0xfc, 0xff, 0xff, 0xff];
-    let read = |pe: u8, field: u64| {
-        let mut offset = 0;
-        read_encoded_pointer(&bytes, &mut offset, encoding, pe, field, &bases)
+    assert_eq!(cie.version, 4);
+    assert_eq!(cie.augmentation, "");
+    assert_eq!(cie.address_size, Some(8));
+    assert_eq!(cie.segment_size, Some(0));
+    let EhFrameEntry::Fde(fde) = &entries[1] else {
+        panic!("expected an FDE");
     };
-    assert_eq!(
-        read(DW_EH_PE_PCREL | DW_EH_PE_SDATA4, 0x10).unwrap(),
-        Some(0xc)
-    );
-    assert_eq!(
-        read(DW_EH_PE_TEXTREL | DW_EH_PE_SDATA4, 0).unwrap(),
-        Some(0xfc)
-    );
-    assert_eq!(
-        read(DW_EH_PE_DATAREL | DW_EH_PE_UDATA2, 0).unwrap(),
-        Some(0x200 + 0xfffc)
-    );
-    assert!(read(DW_EH_PE_FUNCREL | DW_EH_PE_SDATA4, 0).is_err());
-    // ELF32 arithmetic wraps to 32 bits.
-    assert_eq!(
-        read(DW_EH_PE_PCREL | DW_EH_PE_SDATA4, 0).unwrap(),
-        Some(0xffff_fffc)
-    );
-    assert_eq!(
-        read(DW_EH_PE_INDIRECT | DW_EH_PE_PCREL | DW_EH_PE_SDATA4, 0x10).unwrap(),
-        Some(0xc)
-    );
-    assert!(read(0x0d, 0).is_err());
-    assert!(read(DW_EH_PE_UDATA8, 0).is_err());
+    assert_eq!((fde.pc_begin, fde.pc_range), (0x1000, 0x20));
+    assert_eq!(fde.instructions, []);
+    // The segment selector size is missing.
+    buffer_too_small(&records(encoding, &[4, 0, 8], &[]), encoding);
+}
 
-    let aligned = [0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12];
-    let mut offset = 1;
-    let value = read_encoded_pointer(
-        &aligned,
-        &mut offset,
+#[test]
+fn malformed_cie_errors() {
+    let encoding = Encoding::ELF32_BE;
+    // The CIE has no version byte.
+    buffer_too_small(&records(encoding, &[], &[]), encoding);
+    // The augmentation string has no NUL terminator.
+    buffer_too_small(&records(encoding, &[1, b'z', b'R'], &[]), encoding);
+    // An unknown augmentation without `z` has no length to skip its data.
+    invalid_record(
+        &records(encoding, &[1, b'x', 0, 1, 0x78, 16], &[]),
         encoding,
-        DW_EH_PE_ALIGNED,
-        0x1001,
-        &bases,
-    )
-    .unwrap();
-    assert_eq!(value, Some(0x1234_5678));
-    assert_eq!(offset, 8);
+        0,
+    );
+
+    let err =
+        EhFrame::parse(&records(encoding, &[1, 0xff, 0], &[]), encoding, SECTION).unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::InvalidUtf8));
+    assert_eq!(
+        err.context().unwrap().structure.as_deref(),
+        Some(".eh_frame")
+    );
+}
+
+#[test]
+fn malformed_fde_errors() {
+    let encoding = Encoding::ELF64_LE;
+    let cie = [1, 0, 1, 0x78, 16];
+    // The CIE pointer of the FDE at offset 13 points before the section.
+    let mut bytes = records(encoding, &cie, &[&[0; 16]]);
+    encoding.put_u32(&mut bytes, 17, 0x100).unwrap();
+    invalid_record(&bytes, encoding, 13);
+
+    // The FDE pointer encoding is `DW_EH_PE_omit`.
+    let omit = [1, b'z', b'R', 0, 1, 0x78, 16, 1, DW_EH_PE_OMIT];
+    let bytes = records(encoding, &omit, &[&[0; 16]]);
+    invalid_record(&bytes, encoding, 17);
+
+    // The augmentation data of the FDE is too short for the LSDA pointer.
+    let lsda = [1, b'z', b'L', 0, 1, 0x78, 16, 1, DW_EH_PE_UDATA4];
+    let mut fde = vec![0; 16];
+    fde.extend_from_slice(&[2, 0, 0]);
+    buffer_too_small(&records(encoding, &lsda, &[&fde]), encoding);
 }

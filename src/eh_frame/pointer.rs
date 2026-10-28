@@ -196,7 +196,12 @@ pub fn write_sleb128(out: &mut Vec<u8>, mut value: i64) {
 }
 
 /// Read the raw value of a pointer format (the low 4 bits of a `DW_EH_PE_*` encoding).
-fn read_raw(bytes: &[u8], offset: &mut usize, encoding: Encoding, format: u8) -> Result<u64> {
+pub(crate) fn read_raw(
+    bytes: &[u8],
+    offset: &mut usize,
+    encoding: Encoding,
+    format: u8,
+) -> Result<u64> {
     let start = *offset;
     let (value, size) = match format {
         DW_EH_PE_ABSPTR => (encoding.read_addr(bytes, start)?, encoding.addr_size()),

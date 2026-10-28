@@ -91,11 +91,10 @@ impl EhFrameHdr {
                 );
             }
             entries.reserve(count);
+            // The table encoding is not `DW_EH_PE_omit`, so each value is present.
             for _ in 0..count {
-                let initial_location = read(&mut offset, table_encoding)?
-                    .ok_or_else(|| hdr_error("table value is omitted"))?;
-                let fde_address = read(&mut offset, table_encoding)?
-                    .ok_or_else(|| hdr_error("table value is omitted"))?;
+                let initial_location = read(&mut offset, table_encoding)?.unwrap_or_default();
+                let fde_address = read(&mut offset, table_encoding)?.unwrap_or_default();
                 entries.push(EhFrameHdrEntry {
                     initial_location,
                     fde_address,
