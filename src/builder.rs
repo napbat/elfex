@@ -1,7 +1,8 @@
 //! Build a new ELF file: [`ElfBuilder`].
 //!
-//! The builder lays out the sections in `PT_LOAD` segments and writes the headers. It returns
-//! an [`ElfFile`], which you can edit further or serialize with [`ElfFile::try_build`].
+//! Describe each section with a [`BuilderSection`]. The builder lays out the sections in
+//! `PT_LOAD` segments and writes the headers. It returns an [`ElfFile`], which you can edit
+//! further or serialize with [`ElfFile::try_build`].
 //!
 //! # Layout
 //!
@@ -167,6 +168,35 @@ enum EntryPoint {
 ///
 /// Set the file properties and add the sections with the fluent methods. Then call
 /// [`Self::try_build`]. The module documentation describes the layout.
+///
+/// # Examples
+///
+/// Build a shared object with a `PT_NOTE` segment, and read the note back.
+///
+/// ```
+/// use elfex::note::{Note, NoteTable};
+/// use elfex::program::SegmentType;
+/// use elfex::{BuilderSection, ElfBuilder, ElfImage, Encoding, FileType, Machine};
+///
+/// let encoding = Encoding::ELF64_LE;
+/// let notes = NoteTable { notes: vec![Note::gnu_build_id(vec![0xab; 20])] };
+/// let file = ElfBuilder::new(encoding)
+///     .file_type(FileType::DYN)
+///     .machine(Machine::AARCH64)
+///     .page_size(0x1_0000)
+///     .add_section(BuilderSection::note(".note.gnu.build-id", notes.write(encoding, 4)?))
+///     .add_segment_for_section(SegmentType::NOTE, ".note.gnu.build-id")
+///     .try_build()?;
+/// assert!(!file.validate().has_errors());
+/// assert_eq!(file.build_id()?, Some(vec![0xab; 20]));
+///
+/// // A shared object starts at virtual address 0.
+/// let image = ElfImage::parse(&file.try_build()?)?;
+/// assert_eq!(image.image_origin(), Some(0));
+/// assert!(image.load_segments().all(|segment| segment.header.align == 0x1_0000));
+/// assert!(image.segment(SegmentType::NOTE).is_some());
+/// # Ok::<(), elfex::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElfBuilder {
     encoding: Encoding,
