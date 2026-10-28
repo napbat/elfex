@@ -473,4 +473,147 @@ mod tests {
         let reader = SeekReader::with_discovered_size(stream).unwrap();
         assert_eq!(reader.read_bytes_at(0, 2).unwrap(), [0x7f, b'E']);
     }
+
+    #[test]
+    fn seek_reader_keeps_the_stream_position() {
+        let mut cursor = nostdio::Cursor::new(vec![1, 2, 3, 4, 5]);
+        cursor.set_position(3);
+        let mut reader = SeekReader::with_discovered_size(cursor).unwrap();
+        assert_eq!(reader.size(), Some(5));
+        assert_eq!(reader.get_mut().position(), 3);
+        assert_eq!(reader.read_bytes_at(1, 3).unwrap(), [2, 3, 4]);
+        let mut buf = [0u8; 4];
+        assert_eq!(reader.read_at(3, &mut buf).unwrap(), 2);
+        assert_eq!(reader.read_at(9, &mut buf).unwrap(), 0);
+        reader.get_mut().get_mut()[0] = 9;
+        assert_eq!(reader.read_bytes_at(0, 1).unwrap(), [9]);
+        assert_eq!(reader.into_inner().into_inner(), [9, 2, 3, 4, 5]);
+
+        let unsized_reader = SeekReader::new(nostdio::Cursor::new(vec![7u8]), None);
+        assert_eq!(unsized_reader.size(), None);
+        assert_eq!(unsized_reader.read_bytes_at(0, 1).unwrap(), [7]);
+    }
+
+    #[test]
+    fn seek_reader_debug_does_not_need_a_debug_stream() {
+        let stream = InterruptedOnce {
+            inner: nostdio::Cursor::new(Vec::new()),
+            interrupted: true,
+        };
+        let text = format!("{:?}", SeekReader::new(stream, Some(12)));
+        assert!(text.contains("size: Some(12)"), "{text}");
+    }
+
+    #[test]
+    fn vec_reader_owns_its_bytes() {
+        let reader = VecReader::new(vec![0x7f, b'E', b'L']);
+        assert_eq!(reader.data(), [0x7f, b'E', b'L']);
+        assert_eq!(reader.size(), Some(3));
+        let mut buf = [0u8; 2];
+        assert_eq!(reader.read_at(2, &mut buf).unwrap(), 1);
+        assert_eq!(buf[0], b'L');
+        assert_eq!(reader.read_at(3, &mut buf).unwrap(), 0);
+        assert_eq!(reader.read_bytes_at(1, 2).unwrap(), [b'E', b'L']);
+        assert_eq!(reader.into_inner(), [0x7f, b'E', b'L']);
+        assert_eq!(VecReader::default().size(), Some(0));
+    }
+
+    #[test]
+    fn reference_reader_forwards_to_the_reader() {
+        fn first_byte(reader: impl ReadAt) -> (Option<u64>, Vec<u8>) {
+            (reader.size(), reader.read_bytes_at(0, 1).unwrap())
+        }
+        let data = [5u8, 6];
+        assert_eq!(SliceReader::new(&data).data(), data);
+        let reader = VecReader::new(data.to_vec());
+        assert_eq!(first_byte(&reader), (Some(2), vec![5]));
+        let dynamic: &dyn ReadAt = &reader;
+        assert_eq!(first_byte(dynamic), (Some(2), vec![5]));
+        assert_eq!(reader.into_inner(), data);
+    }
+
+    /// Source that reads one byte for each call, and can report a wrong byte count.
+    struct OneByte {
+        report: usize,
+    }
+
+    impl ReadAt for OneByte {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+            if let Some(first) = buf.first_mut() {
+                *first = offset.to_le_bytes()[0];
+            }
+            Ok(self.report)
+        }
+
+        fn size(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    #[test]
+    fn read_exact_at_checks_the_reported_count_and_the_offset() {
+        let reader = OneByte { report: 1 };
+        assert_eq!(reader.read_bytes_at(0x10, 3).unwrap(), [0x10, 0x11, 0x12]);
+        assert!(matches!(
+            reader.read_bytes_at(u64::MAX, 2).unwrap_err().kind(),
+            ErrorKind::OffsetOutOfBounds {
+                offset: u64::MAX,
+                size: u64::MAX
+            }
+        ));
+        let liar = OneByte { report: 2 };
+        assert!(matches!(
+            liar.read_bytes_at(0, 1).unwrap_err().kind(),
+            ErrorKind::Generic(_)
+        ));
+        assert!(matches!(
+            reader.read_bytes_at(0, usize::MAX).unwrap_err().kind(),
+            ErrorKind::Generic(_)
+        ));
+    }
+
+    #[test]
+    fn bounded_base_address_reader_stops_at_its_size() {
+        let data = [1u8, 2, 3, 4];
+        #[expect(unsafe_code, reason = "constructs a reader over a local buffer")]
+        // SAFETY: `data` stays alive and unchanged, and the reader reads at most 3 bytes.
+        let reader = unsafe { BaseAddressReader::new(data.as_ptr(), Some(3)) };
+        assert_eq!(reader.size(), Some(3));
+        let mut buf = [0u8; 4];
+        assert_eq!(reader.read_at(1, &mut buf).unwrap(), 2);
+        assert_eq!(buf[..2], [2, 3]);
+        assert_eq!(reader.read_at(3, &mut buf).unwrap(), 0);
+        assert_eq!(reader.read_at(u64::MAX, &mut buf).unwrap(), 0);
+        assert!(matches!(
+            reader.read_exact_at(0, &mut buf).unwrap_err().kind(),
+            ErrorKind::BufferTooSmall {
+                expected: 4,
+                actual: 3
+            }
+        ));
+        #[expect(unsafe_code, reason = "constructs a reader over a local buffer")]
+        // SAFETY: the test reads only the 4 bytes of `data`.
+        let unbounded = unsafe { BaseAddressReader::from_base(data.as_ptr()) };
+        assert_eq!(unbounded.size(), None);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn file_reader_reads_a_temporary_file() {
+        let path =
+            std::env::temp_dir().join(format!("elfex-file-reader-{}.bin", std::process::id()));
+        std::fs::write(&path, [0x7f, b'E', b'L', b'F', 2]).unwrap();
+        let reader = FileReader::open(&path).unwrap();
+        assert_eq!(reader.file_size(), 5);
+        assert_eq!(reader.read_bytes_at(3, 2).unwrap(), [b'F', 2]);
+        let unsized_file = FileReader::new(File::open(&path).unwrap(), None);
+        assert_eq!(unsized_file.file_size(), 0);
+        assert_eq!(unsized_file.read_bytes_at(0, 1).unwrap(), [0x7f]);
+        drop((reader, unsized_file));
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            FileReader::open(&path).unwrap_err().kind(),
+            ErrorKind::Io(_)
+        ));
+    }
 }
