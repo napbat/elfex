@@ -357,13 +357,21 @@ fn rejects_layouts_that_overflow() {
             "{error}"
         );
     }
-    // The section data must go past `isize::MAX` bytes.
+    // The section data must go past `isize::MAX` bytes. A 64-bit target cannot allocate the
+    // file. A 32-bit target cannot address the file offset.
     let far_section = ElfBuilder::new(Encoding::ELF64_LE).add_section(BuilderSection {
         addralign: 1 << 63,
         ..BuilderSection::progbits(".far", 0, vec![1])
     });
     let error = far_section.try_build().unwrap_err();
-    assert!(matches!(error.kind, ErrorKind::Generic(_)), "{error}");
+    if cfg!(target_pointer_width = "64") {
+        assert!(matches!(error.kind, ErrorKind::Generic(_)), "{error}");
+    } else {
+        assert!(
+            matches!(error.kind, ErrorKind::ValueOutOfRange(_)),
+            "{error}"
+        );
+    }
 }
 
 #[test]
