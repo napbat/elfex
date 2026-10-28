@@ -391,6 +391,30 @@ and writable. It adds `PT_PHDR`, `PT_INTERP` and `PT_GNU_STACK`. Use
 `add_segment_for_section` for other segments, for example `PT_DYNAMIC` or `PT_NOTE`. The
 builder returns an `ElfFile`, so you can edit the result further.
 
+## Examples
+
+The `examples/` directory has four command line tools. Each tool needs the `std` feature.
+
+| Example | What it does |
+| --- | --- |
+| `elfdump` | Prints a summary of a file, as `readelf` does: headers, dynamic table, symbols with versions, relocations, notes and validation issues |
+| `elfpatch` | Changes a file, as `patchelf` does: the interpreter, added and removed sections and the entry point. It validates the result |
+| `dump-process` | Reads a module of a running Linux process through `/proc/<pid>/mem`, prints a summary and can write the module to a file |
+| `build-tiny` | Builds a minimal static x86-64 Linux executable that prints a message |
+
+```bash
+cargo run --example elfdump -- -h -l -S -d /usr/bin/ls
+cargo run --example elfdump -- -s -V /usr/lib/x86_64-linux-gnu/libc.so.6
+cargo run --example elfpatch -- --print-interpreter --print-needed /usr/bin/ls
+cargo run --example elfpatch -- --set-interpreter /opt/ld.so --add-section .note.extra=extra.bin -o ls.patched /usr/bin/ls
+cargo run --example dump-process -- "$(pidof -s sleep)" libc.so.6 --output libc.dump
+cargo run --example build-tiny -- --message "Hello" tiny && ./tiny
+```
+
+Without part options, `elfdump` prints all parts. Use `--help` with each tool to see all
+options. `dump-process` needs read access to the memory of the process. The kernel setting
+`kernel.yama.ptrace_scope` can block this access. In that case, run the tool as root.
+
 ## Module layout
 
 The facade modules contain the usual entry points:
