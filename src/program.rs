@@ -302,5 +302,13 @@ mod tests {
         };
         assert_eq!(wrapping.memory_range(), None);
         assert!(!wrapping.contains_vaddr(u64::MAX));
+        let error = ProgramHeader::parse(&[0; 55], Encoding::ELF64_LE).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::ErrorKind::BufferTooSmall {
+                expected: 56,
+                actual: 55
+            }
+        ));
     }
 }

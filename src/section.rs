@@ -425,6 +425,14 @@ mod tests {
         assert!(!wrapping.is_compressed());
         assert_eq!(wrapping.memory_range(), None);
         assert_eq!(wrapping.file_range(), None);
+        let error = SectionHeader::parse(&[0; 39], Encoding::ELF32_BE).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::ErrorKind::BufferTooSmall {
+                expected: 40,
+                actual: 39
+            }
+        ));
     }
 
     #[test]
