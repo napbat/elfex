@@ -17,6 +17,8 @@
 //!   system helpers and `FileReader` need `std`.
 //! - **Stream I/O**: `nostdio` supplies the `Read`, `Write` and `Seek` traits and the
 //!   `nostdio::IoError` type. With the `std` feature, these are the `std::io` items.
+//! - **Targets**: The crate needs a `usize` of at least 32 bits. A compile-time check rejects
+//!   a target with a smaller `usize`.
 //!
 //! ## Architecture
 //!
@@ -80,6 +82,12 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 extern crate std;
+
+// The crate converts many 32-bit ELF values to `usize`. A smaller `usize` cannot hold them.
+const _: () = assert!(
+    usize::BITS >= 32,
+    "elfex needs a target with a `usize` of at least 32 bits"
+);
 
 /// Internal prelude. Each source file uses `use crate::prelude::*;` to get the `alloc`
 /// types and macros that the code needs.
