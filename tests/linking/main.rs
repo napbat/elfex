@@ -365,6 +365,13 @@ fn file_and_image_without_dynamic_table_give_empty_results() {
         image.to_mapped_image_at(0x1000_0000).unwrap(),
         image.to_mapped_image().unwrap()
     );
+
+    // An image without a `PT_LOAD` segment has no origin.
+    let empty = ElfImage::new(image.header, Vec::new());
+    assert!(matches!(
+        empty.to_mapped_image_at(0x1000_0000).unwrap_err().kind(),
+        elfex::ErrorKind::InvalidSegment(_)
+    ));
 }
 
 /// Check that a file without a dynamic table gives empty results.
