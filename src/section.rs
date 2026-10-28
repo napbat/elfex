@@ -1,5 +1,11 @@
 //! Section headers (`Elf32_Shdr` and `Elf64_Shdr`), section constants and the compression
 //! header (`Elf32_Chdr` and `Elf64_Chdr`).
+//!
+//! - [`SectionHeader`] parses and writes one section header. [`SectionType`] gives `sh_type`.
+//! - The `SHF_*` constants (for example [`SHF_ALLOC`]) are the bits of `sh_flags`.
+//! - The `SHN_*` constants (for example [`SHN_UNDEF`]) are the reserved section indices.
+//! - [`GRP_COMDAT`] is a flag of a section group (`SHT_GROUP`).
+//! - [`CompressionHeader`] and [`CompressionType`] describe `SHF_COMPRESSED` section data.
 
 use crate::endian::{ByteReader, Class, Encoding};
 use crate::prelude::*;
