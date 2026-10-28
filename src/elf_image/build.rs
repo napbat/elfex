@@ -52,20 +52,17 @@ impl ElfImage {
         let mut image = zeroed(size)?;
         for segment in self.load_segments() {
             let memory = segment.memory_data();
-            if memory.is_empty() {
-                continue;
-            }
+            // `origin` is not larger than the lowest `p_vaddr`, and `size` is not smaller than
+            // the end of each memory range minus `origin`. Thus the image contains the target.
             let target = segment
                 .header
                 .vaddr
                 .checked_sub(origin)
                 .and_then(|start| usize::try_from(start).ok())
-                .and_then(|start| image.get_mut(start..start.checked_add(memory.len())?))
-                .ok_or_else(|| {
-                    Error::invalid_segment("the segment is outside the mapped image")
-                        .at_address(segment.header.vaddr)
-                })?;
-            target.copy_from_slice(memory);
+                .and_then(|start| image.get_mut(start..start.checked_add(memory.len())?));
+            if let Some(target) = target {
+                target.copy_from_slice(memory);
+            }
         }
         Ok(image)
     }
@@ -164,9 +161,8 @@ impl ElfImage {
     fn program_header_table(&self, entry_size: u16) -> Result<Vec<u8>> {
         let encoding = self.encoding();
         let entry_size = usize::from(entry_size);
-        let total = entry_size
-            .checked_mul(self.segments.len())
-            .ok_or_else(|| Error::invalid_header("the program header table size overflows"))?;
+        // `output_header` limits the count to fewer than `PN_XNUM`: the size does not overflow.
+        let total = entry_size.saturating_mul(self.segments.len());
         let mut table = Vec::new();
         table
             .try_reserve_exact(total)

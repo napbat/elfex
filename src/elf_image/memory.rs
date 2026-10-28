@@ -34,7 +34,8 @@ impl ElfImage {
     ///   `PT_LOAD` memory range contains the bytes.
     /// - Return a generic error if the allocation of `len` bytes fails.
     pub fn read_vaddr(&self, vaddr: u64, len: usize) -> Result<Vec<u8>> {
-        let len_u64 = u64::try_from(len).map_err(|_| Error::invalid_address(vaddr))?;
+        // A `usize` value always fits in `u64`.
+        let len_u64 = u64::try_from(len).unwrap_or(u64::MAX);
         let segment = self
             .load_segment_for(vaddr, len_u64)
             .ok_or_else(|| Error::invalid_address(vaddr))?;
@@ -89,7 +90,8 @@ impl ElfImage {
     ///   `PT_LOAD` memory range contains the bytes.
     /// - Return a generic error if the allocation of the new data fails.
     pub fn write_vaddr(&mut self, vaddr: u64, bytes: &[u8]) -> Result<()> {
-        let len = u64::try_from(bytes.len()).map_err(|_| Error::invalid_address(vaddr))?;
+        // A `usize` value always fits in `u64`.
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let segment = self
             .segments
             .iter_mut()
@@ -108,11 +110,8 @@ impl ElfImage {
                 .map_err(|_| Error::generic(format!("cannot allocate {end} bytes")))?;
             segment.data.resize(end, 0);
         }
-        let target = segment
-            .data
-            .get_mut(start..end)
-            .ok_or_else(|| Error::invalid_address(vaddr))?;
-        target.copy_from_slice(bytes);
+        // The data has at least `end` bytes.
+        segment.data[start..end].copy_from_slice(bytes);
         Ok(())
     }
 

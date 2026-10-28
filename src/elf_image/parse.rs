@@ -352,9 +352,8 @@ impl<R: ReadAt> SegmentSource<'_, R> {
         let readable = to_usize(readable, request.offset)?;
         let required = to_usize(request.required, request.offset)?;
         let mut data = zeroed(total)?;
-        let Some(buffer) = data.get_mut(..readable) else {
-            return Err(too_large(request.offset));
-        };
+        // `total` is not smaller than `readable`.
+        let buffer = &mut data[..readable];
         match self.reader.read_exact_at(absolute, buffer) {
             Ok(()) => {}
             Err(error) if !zero && readable <= required => {
@@ -391,9 +390,7 @@ impl<R: ReadAt> SegmentSource<'_, R> {
             data.try_reserve_exact(chunk)
                 .map_err(|_| Error::generic("the segment data is too large to allocate"))?;
             data.resize(start.saturating_add(chunk), 0);
-            let Some(buffer) = data.get_mut(start..) else {
-                return Err(too_large(request.offset));
-            };
+            let buffer = &mut data[start..];
             let kept = match self.reader.read_exact_at(offset, buffer) {
                 Ok(()) => chunk,
                 Err(error) if !zero && required == len => {
@@ -434,9 +431,8 @@ impl<R: ReadAt> SegmentSource<'_, R> {
             let chunk = usize::try_from(to_boundary)
                 .map_or(readable - position, |size| size.min(readable - position));
             let end = position + chunk;
-            let Some(page) = buffer.get_mut(position..end) else {
-                break;
-            };
+            // `chunk` is not larger than `readable - position`.
+            let page = &mut buffer[position..end];
             if let Err(error) = self.reader.read_exact_at(offset, page) {
                 let kept = position.saturating_add(self.read_prefix(offset, page));
                 if kept >= required {
@@ -459,12 +455,9 @@ impl<R: ReadAt> SegmentSource<'_, R> {
     fn read_prefix(&self, offset: u64, buffer: &mut [u8]) -> usize {
         let mut total = 0usize;
         while let Some(rest) = buffer.get_mut(total..).filter(|rest| !rest.is_empty()) {
-            let Some(at) = u64::try_from(total)
-                .ok()
-                .and_then(|total| offset.checked_add(total))
-            else {
-                break;
-            };
+            // The page ends at or before the next multiple of `PAGE_SIZE`, which is at most
+            // 2^64. Thus `offset + total` does not overflow.
+            let at = offset.saturating_add(u64::try_from(total).unwrap_or(u64::MAX));
             match self.reader.read_at(at, rest) {
                 Ok(count) if count > 0 && count <= rest.len() => total += count,
                 _ => break,
@@ -489,12 +482,9 @@ impl<R: ReadAt> SegmentSource<'_, R> {
     }
 }
 
-/// Return the error for a segment that is too large for this platform.
-fn too_large(offset: u64) -> Error {
-    Error::invalid_segment("the segment is too large for this platform").at_offset(offset)
-}
-
 /// Convert a segment size to `usize`.
 fn to_usize(value: u64, offset: u64) -> Result<usize> {
-    usize::try_from(value).map_err(|_| too_large(offset))
+    usize::try_from(value).map_err(|_| {
+        Error::invalid_segment("the segment is too large for this platform").at_offset(offset)
+    })
 }

@@ -84,10 +84,10 @@ impl ElfImage {
     /// - Return [`ErrorKind::InvalidAddress`](crate::ErrorKind::InvalidAddress) if a
     ///   relocated word is outside the mapped image.
     pub fn to_mapped_image_at(&self, runtime_base: u64) -> Result<Vec<u8>> {
-        let mut image = self.to_mapped_image()?;
         let origin = self.image_origin().ok_or_else(|| {
             Error::invalid_segment("the image has no PT_LOAD segment with a defined origin")
         })?;
+        let mut image = self.to_mapped_image()?;
         let new_bias = runtime_base.wrapping_sub(origin);
         let current_bias = match self.source_layout {
             SourceLayout::Mapped => self.load_bias().unwrap_or(0),
