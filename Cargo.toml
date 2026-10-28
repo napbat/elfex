@@ -20,6 +20,25 @@ std = ["nostdio/std"]
 [dependencies]
 nostdio = { version = "0.2", default-features = false }
 
+# The examples are command line tools. They use `std` files and processes.
+[[example]]
+name = "elfdump"
+required-features = ["std"]
+
+[[example]]
+name = "elfpatch"
+required-features = ["std"]
+
+[[example]]
+name = "dump-process"
+path = "examples/dump_process/main.rs"
+required-features = ["std"]
+
+[[example]]
+name = "build-tiny"
+path = "examples/build_tiny.rs"
+required-features = ["std"]
+
 [lints.rust]
 warnings = { level = "deny", priority = -2 }
 unused = { level = "deny", priority = -1 }
