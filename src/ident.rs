@@ -1,4 +1,7 @@
 //! The ELF identification bytes (`e_ident`).
+//!
+//! [`Ident`] holds the first [`EI_NIDENT`] bytes of a file: the magic bytes ([`ELF_MAGIC`]),
+//! the class, the byte order, the version and the operating system ABI ([`OsAbi`]).
 
 use crate::endian::{Class, Encoding, Endian};
 use crate::{Error, Result};
