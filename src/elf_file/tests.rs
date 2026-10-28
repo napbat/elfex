@@ -9,6 +9,7 @@ use crate::validation::ValidationCode;
 mod accessors;
 mod building;
 mod editing;
+mod removing;
 
 /// Return the error kind of a failed result.
 fn error_kind<T: core::fmt::Debug>(result: Result<T>) -> ErrorKind {
@@ -430,21 +431,6 @@ fn removes_a_section() {
 }
 
 #[test]
-fn removes_only_the_last_section_with_a_symbol_table() {
-    let mut elf = sample(Encoding::ELF64_LE);
-    let index = elf
-        .add_section(NewSection::new(".symtab", SectionType::SYMTAB, vec![0; 24]))
-        .unwrap();
-    assert!(matches!(
-        elf.remove_section(5).unwrap_err().kind,
-        ErrorKind::InvalidSection(_)
-    ));
-    elf.remove_section(index).unwrap();
-    elf.remove_section(5).unwrap();
-    rebuild(&elf);
-}
-
-#[test]
 fn adds_load_segments() {
     for encoding in [Encoding::ELF64_LE, Encoding::ELF32_BE] {
         let mut elf = sample(encoding);
@@ -758,24 +744,6 @@ fn rejects_header_bytes_that_change_an_overlapping_program_table() {
         elf.try_build().unwrap_err().kind,
         ErrorKind::InvalidHeader(_)
     ));
-}
-
-#[test]
-fn does_not_remove_a_group_member() {
-    let encoding = Encoding::ELF64_LE;
-    let mut elf = sample(encoding);
-    let mut members = Vec::new();
-    encoding.write_u32(&mut members, 1);
-    encoding.write_u32(&mut members, 5);
-    let group = elf
-        .add_section(NewSection::new(".group", SectionType::GROUP, members))
-        .unwrap();
-    assert!(matches!(
-        elf.remove_section(5).unwrap_err().kind,
-        ErrorKind::InvalidSection(_)
-    ));
-    elf.remove_section(group).unwrap();
-    elf.remove_section(5).unwrap();
 }
 
 #[test]

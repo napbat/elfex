@@ -3,11 +3,11 @@
 use super::{ElfFile, align_up, overlaps, resolved_shnum, string_at};
 use crate::prelude::*;
 use crate::program::{PF_R, ProgramHeader, SegmentType};
-use crate::section::{
-    SHF_ALLOC, SHF_INFO_LINK, SHN_LORESERVE, SHN_XINDEX, SectionHeader, SectionType,
-};
+use crate::section::{SHF_ALLOC, SHN_LORESERVE, SHN_XINDEX, SectionHeader, SectionType};
 use crate::{Error, Result};
 use core::ops::Range;
+
+mod remove;
 
 /// The smallest page size for a new `PT_LOAD` segment: 4 KiB.
 const MIN_PAGE_SIZE: u64 = 0x1000;
@@ -192,88 +192,6 @@ impl ElfFile {
         self.headers.section_names.resize(index, String::new());
         self.headers.section_names.push(section.name);
         Ok(index)
-    }
-
-    /// Remove the section at `index`.
-    ///
-    /// The method decrements each `sh_link` and each section index in `sh_info` above
-    /// `index`, and `e_shstrndx`. `sh_info` holds a section index in a section with
-    /// `SHF_INFO_LINK` and in a `SHT_REL` or `SHT_RELA` section. The data bytes stay in the
-    /// file. If no other section, no segment and no header table uses them, the method sets
-    /// them to zero.
-    ///
-    /// The method does not change the symbol tables. A symbol gives its section index in
-    /// `st_shndx`, and the removal would make these indices wrong. Thus, if the file has a
-    /// `SHT_SYMTAB` or `SHT_DYNSYM` section, the method removes only the last section.
-    ///
-    /// # Errors
-    ///
-    /// Return [`ErrorKind::InvalidSection`](crate::ErrorKind::InvalidSection) in these
-    /// conditions:
-    ///
-    /// - `index` is 0 or out of range.
-    /// - The section is the section name string table (`e_shstrndx`).
-    /// - Another section names the section in `sh_link`, or in `sh_info` as a section index.
-    /// - A `SHT_GROUP` section lists the section as a member.
-    /// - The file has a symbol table and the section is not the last section.
-    pub fn remove_section(&mut self, index: usize) -> Result<()> {
-        let count = self.headers.section_headers.len();
-        if index == 0 || index >= count {
-            return Err(Error::invalid_section(format!(
-                "cannot remove section {index}: the index is 0 or out of range"
-            )));
-        }
-        let shstrndx = self.shstrndx();
-        if shstrndx == Some(index) {
-            return Err(Error::invalid_section(
-                "cannot remove the section name string table",
-            ));
-        }
-        let has_symbols = self.headers.section_headers.iter().any(|header| {
-            header.section_type == SectionType::SYMTAB || header.section_type == SectionType::DYNSYM
-        });
-        if has_symbols && index + 1 != count {
-            return Err(Error::invalid_section(
-                "the file has a symbol table: only the last section can be removed",
-            ));
-        }
-        let target = u32::try_from(index)
-            .map_err(|_| Error::invalid_section("the section index is too large"))?;
-        let linked = self
-            .headers
-            .section_headers
-            .iter()
-            .enumerate()
-            .any(|(other, header)| {
-                other != index
-                    && (header.link == target || (info_is_section(header) && header.info == target))
-            });
-        if linked || self.is_group_member(target) {
-            return Err(Error::invalid_section(format!(
-                "cannot remove section {index}: another section links to it"
-            )));
-        }
-
-        let removed = self.headers.section_headers.remove(index);
-        if index < self.headers.section_names.len() {
-            self.headers.section_names.remove(index);
-        }
-        let limit = u32::try_from(count).unwrap_or(u32::MAX);
-        for header in &mut self.headers.section_headers {
-            if header.link > target && header.link < limit {
-                header.link -= 1;
-            }
-            if info_is_section(header) && header.info > target && header.info < limit {
-                header.info -= 1;
-            }
-        }
-        if let Some(shstrndx) = shstrndx.filter(|shstrndx| *shstrndx > index && *shstrndx < count) {
-            self.set_shstrndx(shstrndx - 1)?;
-        }
-        if let Some(range) = removed.file_range() {
-            self.zero_if_unused(&range, None);
-        }
-        Ok(())
     }
 
     /// Add a `PT_LOAD` segment with `data` and return its virtual address.
@@ -611,24 +529,6 @@ impl ElfFile {
         })
     }
 
-    /// Return `true` if a `SHT_GROUP` section lists section `target` as a member. The group
-    /// data is a `u32` flag word and then one `u32` section index for each member.
-    fn is_group_member(&self, target: u32) -> bool {
-        let encoding = self.encoding();
-        self.headers
-            .section_headers
-            .iter()
-            .filter(|header| header.section_type == SectionType::GROUP)
-            .filter_map(|header| self.section_bytes(header).ok())
-            .any(|data| {
-                (4..data.len()).step_by(4).any(|offset| {
-                    encoding
-                        .read_u32(data, offset)
-                        .is_ok_and(|index| index == target)
-                })
-            })
-    }
-
     /// Create the null section and a `.shstrtab` section that holds `name`. Return the offset
     /// of `name` in the new string table.
     fn create_section_table(&mut self, name: &str) -> Result<u32> {
@@ -791,12 +691,4 @@ impl ElfFile {
             self.data[start..end].fill(0);
         }
     }
-}
-
-/// Return `true` if `sh_info` of `header` holds a section index: the section has
-/// `SHF_INFO_LINK`, or it is a `SHT_REL` or `SHT_RELA` section.
-fn info_is_section(header: &SectionHeader) -> bool {
-    header.flags & SHF_INFO_LINK != 0
-        || header.section_type == SectionType::REL
-        || header.section_type == SectionType::RELA
 }
