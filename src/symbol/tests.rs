@@ -22,6 +22,15 @@ fn sample_symbol() -> Symbol {
 }
 
 #[test]
+fn value_types_convert_and_print_names() {
+    assert_eq!(SymbolVisibility::from(2u8), SymbolVisibility::HIDDEN);
+    assert_eq!(u8::from(SymbolType::FUNC), 2);
+    assert_eq!(format!("{:?}", SymbolType::FUNC), "SymbolType(STT_FUNC)");
+    assert_eq!(format!("{:?}", SymbolType(0xd)), "SymbolType(0xd)");
+    assert_eq!(SymbolType(0xd).name(), None);
+}
+
+#[test]
 fn elf32_little_endian_field_order() {
     let bytes = [
         1, 0, 0, 0, // st_name
