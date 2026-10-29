@@ -101,14 +101,21 @@ fn relocation_line(file: &ElfFile, relocation: &Relocation, symbols: &[NamedSymb
     let kind = relocation
         .type_name(file.machine())
         .map_or_else(|| format!("{:#x}", relocation.r_type), str::to_owned);
-    let symbol = usize::try_from(relocation.symbol)
-        .ok()
-        .and_then(|index| symbols.get(index))
-        .filter(|symbol| relocation.symbol != 0 && !symbol.name.is_empty())
+    // The symbol lists have no null symbol: the symbol at index `i` is entry `i - 1`.
+    let symbol = relocation
+        .symbol
+        .checked_sub(1)
+        .and_then(|position| usize::try_from(position).ok())
+        .and_then(|position| symbols.get(position))
+        .filter(|symbol| symbol.index == relocation.symbol && !symbol.name.is_empty())
         .map_or_else(String::new, symbol_name);
-    let addend = relocation
-        .addend
-        .map_or_else(String::new, |addend| format!("{addend:+#x}"));
+    let addend = relocation.addend.map_or_else(String::new, |addend| {
+        if addend < 0 {
+            format!("-{:#x}", addend.unsigned_abs())
+        } else {
+            format!("+{addend:#x}")
+        }
+    });
     format!(
         "  {:#0w$x} {kind:<28} {symbol} {addend}",
         relocation.offset,
@@ -123,13 +130,18 @@ pub fn print_relocations(file: &ElfFile, out: &mut dyn Write) -> Result<(), Fail
     }
     for section in &sections {
         let symbols = symbols_of(file, section.symbol_table)?;
+        // The type shows the format: for example SHT_RELA, SHT_CREL or SHT_ANDROID_RELA.
+        let kind = file
+            .section_headers()
+            .get(section.index)
+            .map_or_else(String::new, |header| format!(" [{}]", header.section_type));
         let target = section
             .target_section
             .and_then(|index| file.section(index))
             .map_or_else(String::new, |target| format!(" for {}", target.name));
         writeln!(
             out,
-            "Relocation section {}{target} ({} entries):",
+            "Relocation section {}{kind}{target} ({} entries):",
             section.name,
             section.table.relocations.len()
         )?;
@@ -138,9 +150,20 @@ pub fn print_relocations(file: &ElfFile, out: &mut dyn Write) -> Result<(), Fail
         }
         writeln!(out)?;
     }
-    if let Some(relr) = file.dynamic_relocations()?.relr {
+    let dynamic = file.dynamic_relocations()?;
+    if let Some(relr) = &dynamic.relr {
         writeln!(out, "RELR relative relocations: {} addresses", relr.len())?;
         writeln!(out)?;
+    }
+    let packed = [
+        ("Android packed relocations (APS2)", &dynamic.android),
+        ("CREL relocations", &dynamic.crel),
+    ];
+    for (name, table) in packed {
+        if let Some(table) = table {
+            writeln!(out, "{name} of the dynamic table: {} entries", table.len())?;
+            writeln!(out)?;
+        }
     }
     Ok(())
 }
