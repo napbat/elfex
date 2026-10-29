@@ -19,6 +19,7 @@ pub use crate::eh_frame::{
 pub use crate::elf_file::{RelocationSection, SectionGroup};
 pub use crate::group::GroupTable;
 pub use crate::hash::{GnuHashTable, SysvHashTable};
+pub use crate::liblist::{Library, LibraryListEntry, LibraryTable};
 pub use crate::linking::{DynamicRelocations, LinkingView, VersionTables};
 pub use crate::note::{AuxvEntry, FileMapping, GnuAbiTag, GnuProperty, Note, NoteTable};
 pub use crate::reloc::{Relocation, RelocationKind, RelocationTable, RelrTable, TlsRelocationKind};

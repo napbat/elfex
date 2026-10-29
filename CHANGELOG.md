@@ -63,6 +63,9 @@ The first release, 0.1.0.
   `TlsRelocationKind` (`tls_relocation_kind`, `Relocation::tls_kind`) gives the thread-local
   storage value that a TLS type writes.
 - Core file notes: `NT_FILE` mappings and the `NT_AUXV` auxiliary vector.
+- The prelink library list (`DT_GNU_LIBLIST`): `library_list()` on `ElfFile`, `ElfImage` and
+  `LinkingView` gives each entry with its name (`LibraryListEntry`). `LibraryTable` parses and
+  writes the `Elf32_Lib` and `Elf64_Lib` entries, and `liblist` holds the `LL_*` flags.
 - Mapped image helpers: the image origin, the load bias, `to_mapped_image`, and
   `to_mapped_image_at` with the relative relocations. `ElfImage::restore_dynamic_pointers`
   writes the file addresses back into the dynamic table of a process dump.

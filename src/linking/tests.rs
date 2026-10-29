@@ -15,6 +15,7 @@ use crate::version::{
     VER_FLG_BASE, VersionDefinition, VersionNeedEntry, VersionRequirement, VersymTable,
 };
 
+mod liblist;
 mod packed;
 mod sections;
 mod view;

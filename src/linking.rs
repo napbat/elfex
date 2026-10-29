@@ -47,6 +47,7 @@ use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
 use crate::header::Machine;
+use crate::liblist::{LibraryListEntry, LibraryTable};
 use crate::note::{
     AuxvEntry, ELF_NOTE_CORE, ELF_NOTE_GNU, FileMapping, NT_AUXV, NT_FILE, NT_GNU_BUILD_ID, Note,
     NoteTable, parse_auxv, parse_nt_file,
@@ -435,5 +436,33 @@ impl<'a> Linker<'a> {
             .chunks_exact(word)
             .map(|chunk| encoding.read_addr(chunk, 0))
             .collect()
+    }
+
+    /// Return the prelink library list at `DT_GNU_LIBLIST` with the size
+    /// `DT_GNU_LIBLISTSZ`, with the names from the dynamic string table.
+    pub(crate) fn library_list(&self) -> Result<Option<Vec<LibraryListEntry>>> {
+        let Some(address) = self.pointer(DynamicTag::GNU_LIBLIST) else {
+            return Ok(None);
+        };
+        let structure = "DT_GNU_LIBLIST";
+        let size = self.required_size(DynamicTag::GNU_LIBLISTSZ, structure)?;
+        let bytes = self.bytes(address, size, structure)?;
+        let table = LibraryTable::parse(bytes, self.encoding())
+            .map_err(|error| error.at_address(address))?;
+        let strings = self.strings()?;
+        table
+            .libraries
+            .into_iter()
+            .map(|library| {
+                Ok(LibraryListEntry {
+                    name: dynamic_string(strings, library.name.into())?,
+                    time_stamp: library.time_stamp,
+                    checksum: library.checksum,
+                    version: library.version,
+                    flags: library.flags,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some)
     }
 }

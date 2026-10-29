@@ -4,6 +4,7 @@ use super::symbols::{DynamicSymbols, SymbolSearch, is_any, is_export, is_import,
 use super::{DynamicRelocations, Linker, VersionTables};
 use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::hash::{GnuHashTable, SysvHashTable};
+use crate::liblist::LibraryListEntry;
 use crate::prelude::*;
 use crate::section::SHN_XINDEX;
 use crate::strtab::StringTable;
@@ -332,6 +333,19 @@ impl<'a> LinkingView<'a> {
     pub fn preinit_array(&self) -> Result<Vec<u64>> {
         self.linker
             .array(DynamicTag::PREINIT_ARRAY, DynamicTag::PREINIT_ARRAYSZ)
+    }
+
+    /// Return the prelink library list (`DT_GNU_LIBLIST`, `DT_GNU_LIBLISTSZ`), with the
+    /// names from the dynamic string table. Return `None` if the dynamic table has no
+    /// `DT_GNU_LIBLIST`.
+    ///
+    /// # Errors
+    ///
+    /// Return an error if `DT_GNU_LIBLISTSZ` is missing or is not a multiple of
+    /// [`Library::SIZE`](crate::liblist::Library::SIZE), if the list is outside the segments,
+    /// or if a name offset is outside the dynamic string table.
+    pub fn library_list(&self) -> Result<Option<Vec<LibraryListEntry>>> {
+        self.linker.library_list()
     }
 
     /// Return the dynamic symbols after index 0 that `keep` accepts.

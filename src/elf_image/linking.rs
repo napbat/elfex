@@ -10,6 +10,7 @@ use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
 use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::header::Machine;
+use crate::liblist::LibraryListEntry;
 use crate::linking::symbols::{is_any, is_export, is_import};
 use crate::linking::{
     self, AddressSpace, DynamicRelocations, Linker, LinkingView, NoteSource, SegmentBytes,
@@ -457,6 +458,17 @@ impl ElfImage<'_> {
     pub fn preinit_array(&self) -> Result<Vec<u64>> {
         self.linker()?
             .array(DynamicTag::PREINIT_ARRAY, DynamicTag::PREINIT_ARRAYSZ)
+    }
+
+    /// Return the prelink library list (`DT_GNU_LIBLIST`, `DT_GNU_LIBLISTSZ`), with the
+    /// names from the dynamic string table. Return `None` if the dynamic table has no
+    /// `DT_GNU_LIBLIST`.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`LinkingView::library_list`].
+    pub fn library_list(&self) -> Result<Option<Vec<LibraryListEntry>>> {
+        self.linker()?.library_list()
     }
 
     /// Return the `.eh_frame_hdr` table of the first `PT_GNU_EH_FRAME` segment.

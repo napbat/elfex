@@ -286,6 +286,7 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `notes()`, `build_id()` | The notes, and the `NT_GNU_BUILD_ID` descriptor |
 | `core_file_mappings()`, `auxv()` | The `NT_FILE` mapped files and the `NT_AUXV` auxiliary vector of a core file |
 | `init_array()`, `fini_array()`, `preinit_array()` | The initialization and termination functions |
+| `library_list()` | The prelink library list (`DT_GNU_LIBLIST`) with the names (`LibraryListEntry`) |
 | `eh_frame_hdr()` | The `PT_GNU_EH_FRAME` table |
 
 `ElfFile` also has accessors for the sections:
@@ -359,10 +360,10 @@ Each table type also parses from bytes and serializes to bytes. For example,
 table. `RelocationTable` also decodes and encodes the compressed formats:
 `parse_android_packed` and `write_android_packed` for the Android `APS2` format, and
 `parse_crel` and `write_crel` for CREL. The table modules (`dynamic`, `symbol`, `strtab`,
-`reloc`, `note`, `hash`, `version`, `group` and `eh_frame`) also hold the constants of each
-area, and the builders (`SymbolTableBuilder`, `StringTableBuilder`, `SysvHashTable::try_build`
-and `GnuHashTable::try_build`). Each `build` function panics on invalid input. Use the
-matching `try_build` function to get a `Result`.
+`reloc`, `note`, `hash`, `version`, `group`, `liblist` and `eh_frame`) also hold the constants
+of each area, and the builders (`SymbolTableBuilder`, `StringTableBuilder`,
+`SysvHashTable::try_build` and `GnuHashTable::try_build`). Each `build` function panics on
+invalid input. Use the matching `try_build` function to get a `Result`.
 
 `ElfHeaders::validate(file_size)` checks only the headers, without the file data. Use it after
 `ElfHeaders::from_slice` or `ElfHeaders::read_from`.
