@@ -181,17 +181,47 @@ impl EhFrame {
     /// augmentations `z`, `R`, `L`, `P`, `S`, `B` and `G`. It skips unknown augmentation data
     /// after `z`. A zero length record ends the section.
     ///
+    /// The parser has no base for `DW_EH_PE_textrel` and `DW_EH_PE_datarel`. Use
+    /// [`Self::parse_with_bases`] to give them.
+    ///
     /// # Errors
     ///
     /// - Return [`crate::ErrorKind::BufferTooSmall`] if a record is truncated.
     /// - Return [`crate::ErrorKind::InvalidTable`] for an unsupported CIE version or
-    ///   augmentation, or an FDE whose CIE pointer does not point to a CIE.
+    ///   augmentation, an FDE whose CIE pointer does not point to a CIE, or a relative
+    ///   pointer encoding without a base.
     /// - Return [`crate::ErrorKind::InvalidUtf8`] if the augmentation string is not UTF-8.
     pub fn parse(
         bytes: &[u8],
         encoding: Encoding,
         section_address: u64,
     ) -> Result<Vec<EhFrameEntry>> {
+        Self::parse_with_bases(bytes, encoding, section_address, &PointerBases::default())
+    }
+
+    /// Parse all records of an `.eh_frame` section, with the bases of the relative pointer
+    /// encodings.
+    ///
+    /// The parser uses [`PointerBases::text`] for `DW_EH_PE_textrel` and
+    /// [`PointerBases::data`] for `DW_EH_PE_datarel` (on x86, the address of the global
+    /// offset table). It uses the field address for `DW_EH_PE_pcrel`, and the `pc_begin` of
+    /// the FDE for a `DW_EH_PE_funcrel` LSDA pointer. Otherwise it parses as [`Self::parse`].
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::parse`].
+    pub fn parse_with_bases(
+        bytes: &[u8],
+        encoding: Encoding,
+        section_address: u64,
+        bases: &PointerBases,
+    ) -> Result<Vec<EhFrameEntry>> {
+        let frame = Frame {
+            bytes,
+            encoding,
+            section_address,
+            bases,
+        };
         let mut entries = Vec::new();
         // The CIEs in section order. A CIE pointer always points backward, so the list is
         // sorted by offset.
@@ -201,27 +231,119 @@ impl EhFrame {
             let Some(header) = read_record_header(bytes, encoding, offset)? else {
                 break;
             };
-            let record = &bytes[..header.end];
             if header.id == 0 {
-                let cie = parse_cie(record, encoding, section_address, offset, header.body)?;
+                let cie = frame.cie(offset, &header)?;
                 cies.push(cie.clone());
                 entries.push(EhFrameEntry::Cie(cie));
             } else {
-                let cie_offset = offset_u64(header.id_offset)
-                    .checked_sub(header.id)
-                    .ok_or_else(|| frame_error("CIE pointer is before the section", offset))?;
+                let cie_offset = cie_offset(&header, offset)?;
                 let cie = cies
                     .binary_search_by_key(&cie_offset, |c| c.offset)
                     .ok()
                     .and_then(|i| cies.get(i))
                     .ok_or_else(|| frame_error("CIE pointer does not point to a CIE", offset))?;
-                let fde = parse_fde(record, encoding, section_address, cie, offset, header.body)?;
-                entries.push(EhFrameEntry::Fde(Fde { cie_offset, ..fde }));
+                entries.push(EhFrameEntry::Fde(frame.fde(offset, &header, cie)?));
             }
             offset = header.end;
         }
         Ok(entries)
     }
+
+    /// Parse the FDE whose length field is at `offset` in an `.eh_frame` section, and the CIE
+    /// that its CIE pointer names.
+    ///
+    /// Use this function to read one FDE that the `.eh_frame_hdr` search table gives
+    /// ([`EhFrameHdr::find_fde`]): the offset is the FDE address minus `section_address`.
+    /// The function reads only the two records. The other arguments are the same as for
+    /// [`Self::parse_with_bases`], and the result is the same as the records of that function.
+    ///
+    /// # Errors
+    ///
+    /// - Return [`crate::ErrorKind::InvalidTable`] if the record at `offset` is a CIE or a
+    ///   terminator, or if its CIE pointer does not point to a CIE.
+    /// - Return an error for the same conditions as [`Self::parse`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use elfex::Encoding;
+    /// use elfex::eh_frame::{EhFrame, PointerBases};
+    ///
+    /// let encoding = Encoding::ELF64_LE;
+    /// // A CIE at offset 0 (version 1, no augmentation) and an FDE at offset 16.
+    /// let mut frame = Vec::new();
+    /// encoding.write_u32(&mut frame, 12);
+    /// encoding.write_u32(&mut frame, 0);
+    /// frame.extend_from_slice(&[1, 0, 1, 0x78, 16, 0, 0, 0]);
+    /// encoding.write_u32(&mut frame, 20);
+    /// encoding.write_u32(&mut frame, 20);
+    /// encoding.write_u64(&mut frame, 0x1000);
+    /// encoding.write_u64(&mut frame, 0x10);
+    ///
+    /// let (cie, fde) = EhFrame::parse_fde_at(&frame, encoding, 0x2000, 16, &PointerBases::default())?;
+    /// assert_eq!((cie.offset, fde.cie_offset), (0, 0));
+    /// assert_eq!((fde.pc_begin, fde.pc_range), (0x1000, 0x10));
+    /// # Ok::<(), elfex::Error>(())
+    /// ```
+    pub fn parse_fde_at(
+        bytes: &[u8],
+        encoding: Encoding,
+        section_address: u64,
+        offset: usize,
+        bases: &PointerBases,
+    ) -> Result<(Cie, Fde)> {
+        let frame = Frame {
+            bytes,
+            encoding,
+            section_address,
+            bases,
+        };
+        let header = read_record_header(bytes, encoding, offset)?
+            .ok_or_else(|| frame_error("the record is a terminator, not an FDE", offset))?;
+        if header.id == 0 {
+            return Err(frame_error("the record is a CIE, not an FDE", offset));
+        }
+        let cie_offset = cie_offset(&header, offset)?;
+        let not_a_cie = || frame_error("CIE pointer does not point to a CIE", offset);
+        let cie_start = usize::try_from(cie_offset).map_err(|_| not_a_cie())?;
+        let cie_header = read_record_header(bytes, encoding, cie_start)?
+            .filter(|cie_header| cie_header.id == 0)
+            .ok_or_else(not_a_cie)?;
+        let cie = frame.cie(cie_start, &cie_header)?;
+        let fde = frame.fde(offset, &header, &cie)?;
+        Ok((cie, fde))
+    }
+}
+
+/// The section that the parser reads, and the bases of its relative pointers.
+struct Frame<'a> {
+    bytes: &'a [u8],
+    encoding: Encoding,
+    section_address: u64,
+    bases: &'a PointerBases,
+}
+
+impl Frame<'_> {
+    /// Parse the CIE at `offset` with the record header `header`.
+    fn cie(&self, offset: usize, header: &RecordHeader) -> Result<Cie> {
+        parse_cie(&self.bytes[..header.end], self, offset, header.body)
+    }
+
+    /// Parse the FDE at `offset` with the record header `header` and its CIE.
+    fn fde(&self, offset: usize, header: &RecordHeader, cie: &Cie) -> Result<Fde> {
+        let fde = parse_fde(&self.bytes[..header.end], self, cie, offset, header.body)?;
+        Ok(Fde {
+            cie_offset: cie.offset,
+            ..fde
+        })
+    }
+}
+
+/// Return the section offset of the CIE that the CIE pointer of an FDE names.
+fn cie_offset(header: &RecordHeader, offset: usize) -> Result<u64> {
+    offset_u64(header.id_offset)
+        .checked_sub(header.id)
+        .ok_or_else(|| frame_error("CIE pointer is before the section", offset))
 }
 
 /// Read the length and identifier of the record at `offset`, or `None` for a terminator.
@@ -255,13 +377,8 @@ fn read_record_header(
 
 /// Parse the CIE that starts at `offset`. `record` ends at the end of the CIE and `pos` is
 /// the offset after the CIE id.
-fn parse_cie(
-    record: &[u8],
-    encoding: Encoding,
-    section_address: u64,
-    offset: usize,
-    mut pos: usize,
-) -> Result<Cie> {
+fn parse_cie(record: &[u8], frame: &Frame<'_>, offset: usize, mut pos: usize) -> Result<Cie> {
+    let encoding = frame.encoding;
     let version = read_u8(record, &mut pos)?;
     if !matches!(version, 1 | 3 | 4) {
         return Err(frame_error("unsupported CIE version", offset));
@@ -300,7 +417,7 @@ fn parse_cie(
         read_uleb128(record, &mut pos)?
     };
     if cie.augmentation.starts_with('z') {
-        pos = parse_cie_augmentation(record, encoding, section_address, pos, &mut cie)?;
+        pos = parse_cie_augmentation(record, frame, pos, &mut cie)?;
     } else if !cie.augmentation.is_empty() && !augmentation_has_eh(&cie.augmentation) {
         return Err(frame_error("unsupported CIE augmentation", offset));
     }
@@ -316,24 +433,23 @@ fn augmentation_has_eh(augmentation: &str) -> bool {
 /// Read the augmentation data of a CIE with a `z` augmentation, and return the offset after it.
 fn parse_cie_augmentation(
     record: &[u8],
-    encoding: Encoding,
-    section_address: u64,
+    frame: &Frame<'_>,
     mut pos: usize,
     cie: &mut Cie,
 ) -> Result<usize> {
+    let encoding = frame.encoding;
     let length = read_uleb128(record, &mut pos)?;
     let end = checked_end(pos, length, record.len())?;
     let data = &record[..end];
-    let bases = PointerBases::default();
     for c in cie.augmentation.chars().skip(1) {
         match c {
             'R' => cie.fde_pointer_encoding = read_u8(data, &mut pos)?,
             'L' => cie.lsda_encoding = Some(read_u8(data, &mut pos)?),
             'P' => {
                 let pe = read_u8(data, &mut pos)?;
-                let field = address_at(encoding, section_address, pos);
+                let field = address_at(encoding, frame.section_address, pos);
                 cie.personality =
-                    read_encoded_pointer(data, &mut pos, encoding, pe, field, &bases)?;
+                    read_encoded_pointer(data, &mut pos, encoding, pe, field, frame.bases)?;
             }
             'S' => cie.is_signal_frame = true,
             // AArch64 pointer authentication with the B key and memory tagging have no data.
@@ -349,16 +465,15 @@ fn parse_cie_augmentation(
 /// the offset after the CIE pointer.
 fn parse_fde(
     record: &[u8],
-    encoding: Encoding,
-    section_address: u64,
+    frame: &Frame<'_>,
     cie: &Cie,
     offset: usize,
     mut pos: usize,
 ) -> Result<Fde> {
+    let encoding = frame.encoding;
     let pe = cie.fde_pointer_encoding;
-    let bases = PointerBases::default();
-    let field = address_at(encoding, section_address, pos);
-    let pc_begin = read_encoded_pointer(record, &mut pos, encoding, pe, field, &bases)?
+    let field = address_at(encoding, frame.section_address, pos);
+    let pc_begin = read_encoded_pointer(record, &mut pos, encoding, pe, field, frame.bases)?
         .ok_or_else(|| frame_error("FDE pc_begin is omitted", offset))?;
     // The address range uses the value format only, without the base.
     let pc_range = wrap_address(encoding, read_raw(record, &mut pos, encoding, pe & 0x0f)?);
@@ -369,9 +484,9 @@ fn parse_fde(
         if let Some(lsda_encoding) = cie.lsda_encoding {
             let func_bases = PointerBases {
                 func: Some(pc_begin),
-                ..PointerBases::default()
+                ..*frame.bases
             };
-            let field = address_at(encoding, section_address, pos);
+            let field = address_at(encoding, frame.section_address, pos);
             lsda = read_encoded_pointer(
                 &record[..end],
                 &mut pos,

@@ -1,3 +1,4 @@
+mod lookup;
 mod pointer;
 
 use super::*;

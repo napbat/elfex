@@ -34,6 +34,9 @@ The first release, 0.1.0.
   and GNU hash tables, GNU symbol versions, section groups (`GroupTable`), `REL`, `RELA` and
   `RELR` relocations, and `.eh_frame` and `.eh_frame_hdr`. Each table builder has a `try_build`
   function that returns a `Result`, and a `build` function that panics on invalid input.
+- `EhFrame::parse_with_bases` decodes `DW_EH_PE_textrel` and `DW_EH_PE_datarel` pointers with
+  the bases of the caller. `EhFrame::parse_fde_at` reads one FDE and its CIE, for example the
+  FDE that `EhFrameHdr::find_fde` gives.
 - Compressed relocation formats: the Android packed format `APS2` (`SHT_ANDROID_REL`,
   `SHT_ANDROID_RELA`, `DT_ANDROID_REL`, `DT_ANDROID_RELA`) and CREL (`SHT_CREL`, `DT_CREL`).
   `RelocationTable` decodes and encodes them (`parse_android_packed`, `write_android_packed`,
