@@ -147,8 +147,12 @@ jobs:
         run: bash scripts/build-corpus.sh "$RUNNER_TEMP/corpus"
 
       - name: Corpus compatibility with llvm-readelf
+        timeout-minutes: 60
         env:
           ELFEX_READELF: llvm-readelf
+          # The runner has 16 GiB of memory. The reference output of a very large library
+          # does not fit when several workers check large files at the same time.
+          ELFEX_CORPUS_MAX_BYTES: "33554432"
         run: |
           export ELFEX_CORPUS="$RUNNER_TEMP/corpus:/usr/bin:/usr/lib/x86_64-linux-gnu"
           cargo test --release --all-features --test corpus -- --ignored --nocapture corpus
@@ -210,7 +214,8 @@ jobs:
         run: |
           cd fuzz
           for target in fuzz-elf-headers fuzz-elf-image fuzz-elf-file fuzz-elf-edit; do
-            cargo +nightly fuzz run -O "$target" -- -max_total_time=60 -rss_limit_mb=4096
+            cargo +nightly fuzz run -O --target x86_64-unknown-linux-gnu "$target" -- \
+              -max_total_time=60 -rss_limit_mb=4096
           done
 
   coverage:
