@@ -74,10 +74,10 @@ fn input_paths() -> Vec<PathBuf> {
 pub struct Prepared<'a> {
     /// The input.
     pub input: &'a Input,
-    /// The parsed file.
-    pub file: ElfFile,
-    /// The parsed image.
-    pub image: ElfImage,
+    /// The parsed file. It borrows the input bytes.
+    pub file: ElfFile<&'a [u8]>,
+    /// The parsed image. It borrows the input bytes.
+    pub image: ElfImage<'a>,
     /// [`LOOKUP_NAMES`] names: exported dynamic symbols and some names that are not in the
     /// file.
     pub names: Vec<String>,
@@ -100,7 +100,7 @@ impl<'a> Prepared<'a> {
             .iter()
             .step_by(step)
             .take(found)
-            .map(|symbol| symbol.name.clone())
+            .map(|symbol| symbol.name.to_string())
             .collect();
         let missing = LOOKUP_NAMES - names.len();
         names.extend((0..missing).map(|index| format!("elfex_bench_missing_{index:04}")));
