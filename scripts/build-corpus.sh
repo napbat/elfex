@@ -110,6 +110,58 @@ mkdir -p "$dir"
 clang --target=x86_64-linux-gnu -g -gz=zlib -fPIC -c "$work/lib.c" -o "$dir/zlib.o" 2>/dev/null || true
 clang --target=x86_64-linux-gnu -g -gz=zstd -fPIC -c "$work/lib.c" -o "$dir/zstd.o" 2>/dev/null || true
 
+# Pointer tables for the Android packed relocations. lld puts runs of relative relocations
+# and runs of relocations with the same symbol in groups that share values.
+{
+    printf 'static int values[48];\nextern int imported_value;\n'
+    printf 'int *value_pointers[48] = {'
+    for i in $(seq 0 47); do printf '&values[%d], ' "$i"; done
+    printf '};\nint *imported_pointers[12] = {'
+    for i in $(seq 0 11); do printf '&imported_value + %d, ' "$i"; done
+    printf '};\n'
+} >"$work/packed.c"
+
+# Android shared objects with packed relocations: SHT_ANDROID_REL (Arm) or SHT_ANDROID_RELA
+# (AArch64), with SHT_RELR or SHT_ANDROID_RELR for the relative relocations.
+for triple in aarch64-linux-android29 armv7-linux-androideabi29; do
+    dir="$out/android/$triple"
+    mkdir -p "$dir"
+    cflags=(--target="$triple" -O1 -fPIC -ffunction-sections -fdata-sections -nostdlib)
+    if ! clang "${cflags[@]}" -c "$work/lib.c" -o "$dir/lib.o" 2>"$work/err" ||
+        ! clang "${cflags[@]}" -c "$work/packed.c" -o "$dir/packed.o" 2>"$work/err"; then
+        note "skip $triple: $(head -1 "$work/err")"
+        rm -rf "$dir"
+        continue
+    fi
+    android_link() {
+        local name="$1"
+        shift
+        ld.lld -shared --build-id -z relro -z now --version-script "$work/lib.map" \
+            --hash-style=both -soname "lib$name.so" "$@" "$dir/lib.o" "$dir/packed.o" \
+            -o "$dir/lib$name.so" 2>"$work/err" ||
+            note "skip $triple lib$name.so: $(head -1 "$work/err")"
+    }
+    android_link android --pack-dyn-relocs=android
+    android_link android-relr --pack-dyn-relocs=android+relr
+    android_link android-relr-tags --pack-dyn-relocs=android+relr --use-android-relr-tags
+done
+
+# Objects with CREL relocation sections (SHT_CREL). LLVM 19 needs the experimental flag.
+for triple in x86_64-linux-gnu aarch64-linux-gnu; do
+    dir="$out/crel/$triple"
+    mkdir -p "$dir"
+    crel=(--target="$triple" -O1 -fPIC -ffunction-sections -fdata-sections -nostdlib)
+    crel+=(-Wa,--crel,--allow-experimental-crel)
+    if ! clang "${crel[@]}" -c "$work/lib.c" -o "$dir/lib.o" 2>"$work/err"; then
+        note "skip CREL for $triple: $(head -1 "$work/err")"
+        rm -rf "$dir"
+        continue
+    fi
+    clang "${crel[@]}" -g -c "$work/lib.c" -o "$dir/lib-debug.o" 2>/dev/null || true
+    clang "${crel[@]}" -c "$work/packed.c" -o "$dir/packed.o" 2>/dev/null || true
+    clang++ "${crel[@]}" -c "$work/comdat.cpp" -o "$dir/comdat.o" 2>/dev/null || true
+done
+
 # Native and GNU cross toolchains with a C library: these programs run.
 cat >"$work/hello.c" <<'EOF'
 #include <stdio.h>
