@@ -118,7 +118,7 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-fn print_summary(path: &str, runtime_base: u64, image: &ElfImage) -> elfex::Result<()> {
+fn print_summary(path: &str, runtime_base: u64, image: &ElfImage<'_>) -> elfex::Result<()> {
     println!("Module:        {path}");
     println!("Runtime base:  {runtime_base:#x}");
     if let Some(bias) = image.load_bias() {
@@ -191,7 +191,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Arguments
 /// Write the image as a raw ELF file without sections. First change the `d_ptr` values that
 /// glibc relocated back to virtual addresses of the file, so that other tools can read the
 /// dynamic table of the dump.
-fn write_dump(mut image: ElfImage, output: &str) -> elfex::Result<()> {
+fn write_dump(mut image: ElfImage<'_>, output: &str) -> elfex::Result<()> {
     let changed = image.restore_dynamic_pointers()?;
     let bytes = image.try_build()?;
     std::fs::write(output, &bytes)?;
