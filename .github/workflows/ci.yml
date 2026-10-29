@@ -110,3 +110,121 @@ jobs:
 
       - name: Documentation (no_std + alloc)
         run: cargo +1.88.0 doc --no-deps --no-default-features
+
+  linux:
+    name: Linux (tests, corpus and edit-and-run)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-19 lld-19 llvm-19 gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross qemu-user
+          echo /usr/lib/llvm-19/bin >> "$GITHUB_PATH"
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-linux-cargo-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-linux-cargo-
+
+      - name: Clippy (all features and targets)
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: Test (all features)
+        run: cargo test --all-features
+
+      - name: Test (no_std + alloc)
+        run: cargo test --no-default-features
+
+      - name: Build the corpus
+        run: bash scripts/build-corpus.sh "$RUNNER_TEMP/corpus"
+
+      - name: Corpus compatibility with llvm-readelf
+        env:
+          ELFEX_READELF: llvm-readelf
+        run: |
+          export ELFEX_CORPUS="$RUNNER_TEMP/corpus:/usr/bin:/usr/lib/x86_64-linux-gnu"
+          cargo test --release --all-features --test corpus -- --ignored --nocapture corpus
+
+      - name: Edit and run the corpus programs
+        run: |
+          export ELFEX_CORPUS="$RUNNER_TEMP/corpus"
+          cargo test --release --all-features --test corpus -- --ignored --nocapture edit_and_run
+
+  big-endian:
+    name: Big-endian host (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: s390x-unknown-linux-gnu
+            gnu: s390x-linux-gnu
+            libc: s390x
+            qemu: qemu-s390x
+          - target: powerpc-unknown-linux-gnu
+            gnu: powerpc-linux-gnu
+            libc: powerpc
+            qemu: qemu-ppc
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-${{ matrix.gnu }} libc6-dev-${{ matrix.libc }}-cross qemu-user
+          rustup target add ${{ matrix.target }}
+
+      - name: Test (all features)
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          RUNNER_PREFIX: ${{ matrix.qemu }} -L /usr/${{ matrix.gnu }}
+        run: |
+          target_env=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          export "CARGO_TARGET_${target_env}_LINKER=${{ matrix.gnu }}-gcc"
+          export "CARGO_TARGET_${target_env}_RUNNER=$RUNNER_PREFIX"
+          cargo test --all-features --lib --tests
+          cargo test --no-default-features --lib --tests
+
+  fuzz:
+    name: Fuzz smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install nightly and cargo-fuzz
+        run: rustup toolchain install nightly --profile minimal
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Run each target for one minute
+        run: |
+          cd fuzz
+          for target in fuzz-elf-headers fuzz-elf-image fuzz-elf-file fuzz-elf-edit; do
+            cargo +nightly fuzz run -O "$target" -- -max_total_time=60 -rss_limit_mb=4096
+          done
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install llvm-tools
+        run: rustup component add llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Measure line coverage
+        run: cargo llvm-cov --all-features --summary-only --fail-under-lines 97
