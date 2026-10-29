@@ -1,6 +1,24 @@
 use super::*;
 use crate::ErrorKind;
 
+mod android;
+mod crel;
+
+#[test]
+fn parse_selects_the_standard_entry_size() {
+    let encoding = Encoding::ELF32_BE;
+    let rela = RelocationTable {
+        relocations: vec![Relocation::with_addend(0x10, 1, 2, -3)],
+        with_addend: true,
+    };
+    let bytes = rela.write(encoding, Machine::PPC).unwrap();
+    let parsed = RelocationTable::parse(&bytes, encoding, Machine::PPC, true).unwrap();
+    assert_eq!(parsed, rela);
+    // The same bytes are a `Rel` table with a wrong size.
+    let error = RelocationTable::parse(&bytes, encoding, Machine::PPC, false).unwrap_err();
+    assert!(matches!(error.kind(), ErrorKind::InvalidTable(_)));
+}
+
 #[test]
 fn entry_sizes() {
     assert_eq!(Relocation::size(Class::Elf32, false), 8);

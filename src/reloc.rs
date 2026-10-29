@@ -1,9 +1,16 @@
-//! Relocation entries and tables: `Elf32_Rel`, `Elf32_Rela`, `Elf64_Rel`, `Elf64_Rela` and
-//! the relative relocation format `Elf32_Relr` / `Elf64_Relr`.
+//! Relocation entries and tables: `Elf32_Rel`, `Elf32_Rela`, `Elf64_Rel`, `Elf64_Rela`, the
+//! relative relocation format `Elf32_Relr` / `Elf64_Relr`, the Android packed format (`APS2`)
+//! and the compact format CREL.
 //!
 //! [`Relocation`] is one entry. [`RelocationTable`] is the contents of an `SHT_REL` or
 //! `SHT_RELA` section, or of the range that `DT_REL`, `DT_RELA` or `DT_JMPREL` names.
 //! [`RelrTable`] is the contents of an `SHT_RELR` section or of the `DT_RELR` range.
+//!
+//! A [`RelocationTable`] also decodes and encodes two compressed formats:
+//!
+//! - The Android packed format (`SHT_ANDROID_REL`, `SHT_ANDROID_RELA`, `DT_ANDROID_REL`,
+//!   `DT_ANDROID_RELA`): see [`RelocationTable::parse_android_packed`].
+//! - CREL (`SHT_CREL`, `DT_CREL`): see [`RelocationTable::parse_crel`].
 //!
 //! The relocation type values are processor-specific. The submodules ([`x86_64`], [`i386`],
 //! [`aarch64`], [`arm`], [`riscv`], [`ppc`], [`ppc64`], [`s390`], [`mips`], [`loongarch`],
@@ -34,6 +41,14 @@
 //! let relr = RelrTable::from_addresses(vec![0x4010, 0x4000, 0x4008], encoding)?;
 //! let packed = RelrTable::parse(&relr.write(encoding)?, encoding)?;
 //! assert_eq!(packed.addresses, [0x4000, 0x4008, 0x4010]);
+//!
+//! // The compressed formats give the same entries.
+//! let android = table.write_android_packed(encoding, Machine::X86_64)?;
+//! assert!(android.starts_with(b"APS2"));
+//! let unpacked = RelocationTable::parse_android_packed(&android, encoding, Machine::X86_64, true)?;
+//! assert_eq!(unpacked, table);
+//! let crel = table.write_crel(encoding)?;
+//! assert_eq!(RelocationTable::parse_crel(&crel, encoding)?, table);
 //! # Ok::<(), elfex::Error>(())
 //! ```
 
@@ -64,7 +79,9 @@ macro_rules! reloc_types {
 }
 
 pub mod aarch64;
+mod android;
 pub mod arm;
+mod crel;
 pub mod hexagon;
 pub mod i386;
 pub mod loongarch;
@@ -80,6 +97,12 @@ pub mod x86_64;
 #[cfg(test)]
 mod tests;
 
+pub use android::{
+    ANDROID_PACKED_MAGIC, ANDROID_PACKED_MAX_ENTRIES_PER_BYTE, RELOCATION_GROUP_HAS_ADDEND_FLAG,
+    RELOCATION_GROUPED_BY_ADDEND_FLAG, RELOCATION_GROUPED_BY_INFO_FLAG,
+    RELOCATION_GROUPED_BY_OFFSET_DELTA_FLAG,
+};
+pub use crel::CREL_HDR_ADDEND;
 pub use relr::RelrTable;
 
 /// A relocation entry: `Elf32_Rel`, `Elf32_Rela`, `Elf64_Rel` or `Elf64_Rela`.
@@ -187,6 +210,29 @@ impl Relocation {
         encoding
             .write_addr(&mut entry, self.offset)
             .map_err(|e| e.in_structure(self.elf32_structure_name()))?;
+        let info = self.info(encoding, machine)?;
+        match encoding.class {
+            // `info` fits in 32 bits: `Self::info` checks the ELF32 fields.
+            Class::Elf32 => encoding.write_u32(&mut entry, u32::try_from(info).unwrap_or(0)),
+            Class::Elf64 => encoding.write_u64(&mut entry, info),
+        }
+        if let Some(addend) = self.addend {
+            encoding
+                .write_signed_addr(&mut entry, addend)
+                .map_err(|e| e.in_structure(self.elf32_structure_name()))?;
+        }
+        out.extend_from_slice(&entry);
+        Ok(())
+    }
+
+    /// Return the `r_info` value of the entry: `(symbol << 8) | r_type` for ELF32, and the
+    /// ELF64 packing of `machine` for ELF64.
+    ///
+    /// # Errors
+    ///
+    /// Return [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange) for ELF32 if
+    /// the symbol index is larger than `0xffffff` or the type is larger than `0xff`.
+    fn info(&self, encoding: Encoding, machine: Machine) -> Result<u64> {
         match encoding.class {
             Class::Elf32 => {
                 if self.symbol > 0x00ff_ffff {
@@ -203,22 +249,10 @@ impl Relocation {
                     ))
                     .in_structure(self.elf32_structure_name()));
                 }
-                encoding.write_u32(&mut entry, (self.symbol << 8) | self.r_type);
+                Ok(u64::from((self.symbol << 8) | self.r_type))
             }
-            Class::Elf64 => {
-                encoding.write_u64(
-                    &mut entry,
-                    encode_info64(self.symbol, self.r_type, encoding, machine),
-                );
-            }
+            Class::Elf64 => Ok(encode_info64(self.symbol, self.r_type, encoding, machine)),
         }
-        if let Some(addend) = self.addend {
-            encoding
-                .write_signed_addr(&mut entry, addend)
-                .map_err(|e| e.in_structure(self.elf32_structure_name()))?;
-        }
-        out.extend_from_slice(&entry);
-        Ok(())
     }
 
     /// Return `true` if the type is the relative relocation type of `machine`
@@ -253,6 +287,34 @@ impl Relocation {
         relocation_type_name(machine, r_type)
     }
 
+    /// Return an error if the offset or the addend does not fit in the class of `encoding`.
+    ///
+    /// # Errors
+    ///
+    /// Return [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange) for ELF32 if
+    /// the offset or the addend does not fit in 32 bits.
+    fn check_class(&self, encoding: Encoding) -> Result<()> {
+        if encoding.is_64bit() {
+            return Ok(());
+        }
+        if u32::try_from(self.offset).is_err() {
+            return Err(Error::value_out_of_range(format!(
+                "offset {:#x} does not fit in ELF32 r_offset",
+                self.offset
+            ))
+            .in_structure(self.elf32_structure_name()));
+        }
+        if let Some(addend) = self.addend
+            && i32::try_from(addend).is_err()
+        {
+            return Err(Error::value_out_of_range(format!(
+                "addend {addend:#x} does not fit in ELF32 r_addend"
+            ))
+            .in_structure(self.elf32_structure_name()));
+        }
+        Ok(())
+    }
+
     /// Return the spec name of the ELF32 entry structure. Only ELF32 fields can overflow.
     const fn elf32_structure_name(&self) -> &'static str {
         if self.addend.is_some() {
@@ -284,6 +346,44 @@ fn decode_info64(info: u64, encoding: Encoding, machine: Machine) -> (u32, u32) 
     }
 }
 
+/// Split an `r_info` value of the class of `encoding` into the symbol index and the type.
+///
+/// For ELF32, the function uses the low 32 bits of `info`.
+fn decode_info(info: u64, encoding: Encoding, machine: Machine) -> (u32, u32) {
+    match encoding.class {
+        Class::Elf32 => {
+            let info = low32(info);
+            (info >> 8, info & 0xff)
+        }
+        Class::Elf64 => decode_info64(info, encoding, machine),
+    }
+}
+
+/// Return the low 32 bits of `value`.
+const fn low32(value: u64) -> u32 {
+    let b = value.to_le_bytes();
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+
+/// Cut an address to the class of `encoding`: ELF32 address arithmetic wraps at 32 bits.
+fn wrap_address(value: u64, encoding: Encoding) -> u64 {
+    if encoding.is_64bit() {
+        value
+    } else {
+        u64::from(low32(value))
+    }
+}
+
+/// Cut an addend to the class of `encoding`: an ELF32 addend is an `Elf32_Sword`, and its
+/// arithmetic wraps at 32 bits.
+fn wrap_addend(value: i64, encoding: Encoding) -> i64 {
+    if encoding.is_64bit() {
+        value
+    } else {
+        i64::from(low32(value.cast_unsigned()).cast_signed())
+    }
+}
+
 /// Join the symbol index and the type into an ELF64 `r_info` value.
 fn encode_info64(symbol: u32, r_type: u32, encoding: Encoding, machine: Machine) -> u64 {
     if is_mips64_le(encoding, machine) {
@@ -301,7 +401,8 @@ fn encode_info64(symbol: u32, r_type: u32, encoding: Encoding, machine: Machine)
 pub struct RelocationTable {
     /// The entries in table order.
     pub relocations: Vec<Relocation>,
-    /// `true` for a `Rela` table (`SHT_RELA`, `DT_RELA`), `false` for a `Rel` table.
+    /// `true` for a table with addends (`SHT_RELA`, `DT_RELA`, `SHT_ANDROID_RELA`, or a CREL
+    /// table with explicit addends), `false` for a table without addends.
     pub with_addend: bool,
 }
 
@@ -313,6 +414,32 @@ impl RelocationTable {
             relocations: Vec::new(),
             with_addend,
         }
+    }
+
+    /// Parse a table of standard-size entries: `Elf32_Rela` or `Elf64_Rela` entries if
+    /// `with_addend` is `true`, else `Elf32_Rel` or `Elf64_Rel` entries.
+    ///
+    /// This is [`Self::parse_rela`] or [`Self::parse_rel`]. For a table with an explicit entry
+    /// size, use [`Self::parse_with_entsize`]. For the compressed formats, use
+    /// [`Self::parse_android_packed`] and [`Self::parse_crel`].
+    ///
+    /// # Errors
+    ///
+    /// Return [`ErrorKind::InvalidTable`](crate::ErrorKind::InvalidTable) if the length of
+    /// `bytes` is not a multiple of the entry size.
+    pub fn parse(
+        bytes: &[u8],
+        encoding: Encoding,
+        machine: Machine,
+        with_addend: bool,
+    ) -> Result<Self> {
+        Self::parse_with_entsize(
+            bytes,
+            encoding,
+            machine,
+            with_addend,
+            Relocation::size(encoding.class, with_addend),
+        )
     }
 
     /// Parse a table of `Elf32_Rel` or `Elf64_Rel` entries.
@@ -402,17 +529,24 @@ impl RelocationTable {
         let entry_size = Relocation::size(encoding.class, self.with_addend);
         let mut out = Vec::with_capacity(self.relocations.len().saturating_mul(entry_size));
         for (index, relocation) in self.relocations.iter().enumerate() {
-            if relocation.addend.is_some() != self.with_addend {
-                let msg = if self.with_addend {
-                    format!("relocation {index} has no addend in a RELA table")
-                } else {
-                    format!("relocation {index} has an addend in a REL table")
-                };
-                return Err(Error::invalid_table(msg));
-            }
+            self.check_addend(index, relocation)?;
             relocation.write(&mut out, encoding, machine)?;
         }
         Ok(out)
+    }
+
+    /// Return an error if `relocation` (entry `index`) has an addend and the table has no
+    /// addends, or the other way around.
+    fn check_addend(&self, index: usize, relocation: &Relocation) -> Result<()> {
+        if relocation.addend.is_some() == self.with_addend {
+            return Ok(());
+        }
+        let msg = if self.with_addend {
+            format!("relocation {index} has no addend in a RELA table")
+        } else {
+            format!("relocation {index} has an addend in a REL table")
+        };
+        Err(Error::invalid_table(msg))
     }
 
     /// Return the number of entries.
