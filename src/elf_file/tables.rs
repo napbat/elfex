@@ -20,7 +20,8 @@ mod tests;
 /// The structure name of the static string table in an error context.
 const SYMTAB_STRINGS: &str = "SHT_SYMTAB sh_link";
 
-/// A relocation section (`SHT_REL` or `SHT_RELA`) of an [`ElfFile`] and its entries.
+/// A relocation section (`SHT_REL`, `SHT_RELA`, `SHT_CREL`, `SHT_ANDROID_REL` or
+/// `SHT_ANDROID_RELA`) of an [`ElfFile`] and its decoded entries.
 ///
 /// [`ElfFile::relocation_sections`] returns this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,27 +233,43 @@ impl ElfFile {
         }
     }
 
-    /// Parse the `SHT_REL` or `SHT_RELA` section at `index`.
+    /// Parse the relocation section at `index`: `SHT_REL`, `SHT_RELA`, `SHT_CREL`,
+    /// `SHT_ANDROID_REL` or `SHT_ANDROID_RELA`.
     ///
-    /// The entry size is `sh_entsize`, or the standard size if `sh_entsize` is 0.
+    /// For `SHT_REL` and `SHT_RELA`, the entry size is `sh_entsize`, or the standard size if
+    /// `sh_entsize` is 0. The function decodes a CREL section with
+    /// [`RelocationTable::parse_crel`] and an Android packed section with
+    /// [`RelocationTable::parse_android_packed`].
     ///
     /// # Errors
     ///
     /// - Return [`ErrorKind::InvalidSection`](crate::ErrorKind::InvalidSection) if `index` is
-    ///   out of range, or if the section is not `SHT_REL` or `SHT_RELA`.
+    ///   out of range, or if the section is not a relocation section (see
+    ///   [`SectionType::is_relocation`]).
     /// - Return an error if the section is outside the file or does not parse.
     pub fn section_relocations(&self, index: usize) -> Result<RelocationTable> {
         let header: SectionHeader = *self.section_header(index)?;
+        let encoding = self.encoding();
         let with_addend = match header.section_type {
             SectionType::RELA => true,
             SectionType::REL => false,
+            SectionType::CREL => {
+                return RelocationTable::parse_crel(self.section_data(index)?, encoding);
+            }
+            SectionType::ANDROID_RELA | SectionType::ANDROID_REL => {
+                return RelocationTable::parse_android_packed(
+                    self.section_data(index)?,
+                    encoding,
+                    self.machine(),
+                    header.section_type == SectionType::ANDROID_RELA,
+                );
+            }
             other => {
                 return Err(Error::invalid_section(format!(
-                    "section {index} has the type {other}, not SHT_REL or SHT_RELA"
+                    "section {index} has the type {other}, not a relocation section type"
                 )));
             }
         };
-        let encoding = self.encoding();
         let entsize = if header.entsize == 0 {
             Relocation::size(encoding.class, with_addend)
         } else {
@@ -269,7 +286,8 @@ impl ElfFile {
         )
     }
 
-    /// Return all `SHT_REL` and `SHT_RELA` sections with their entries, in section order.
+    /// Return all relocation sections with their entries, in section order: the `SHT_REL`,
+    /// `SHT_RELA`, `SHT_CREL`, `SHT_ANDROID_REL` and `SHT_ANDROID_RELA` sections.
     ///
     /// # Errors
     ///
@@ -279,9 +297,7 @@ impl ElfFile {
         self.section_headers()
             .iter()
             .enumerate()
-            .filter(|(_, header)| {
-                header.section_type == SectionType::REL || header.section_type == SectionType::RELA
-            })
+            .filter(|(_, header)| header.section_type.is_relocation())
             .map(|(index, header)| {
                 let info_is_section = relocatable || header.flags & SHF_INFO_LINK != 0;
                 Ok(RelocationSection {

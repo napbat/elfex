@@ -275,8 +275,7 @@ impl ElfFile {
     fn check_section_symbols(&self, target: Target, symbols: &[(usize, u32)]) -> Result<()> {
         for (other, header) in self.headers.section_headers.iter().enumerate() {
             let link = usize::try_from(header.link).unwrap_or(usize::MAX);
-            let is_relocations =
-                header.section_type == SectionType::REL || header.section_type == SectionType::RELA;
+            let is_relocations = header.section_type.is_relocation();
             let is_group = header.section_type == SectionType::GROUP;
             if other == target.index
                 || !(is_relocations || is_group)
@@ -426,9 +425,7 @@ fn too_large() -> Error {
 }
 
 /// Return `true` if `sh_info` of `header` holds a section index: the section has
-/// `SHF_INFO_LINK`, or it is a `SHT_REL` or `SHT_RELA` section.
+/// `SHF_INFO_LINK`, or it is a relocation section (see [`SectionType::is_relocation`]).
 fn info_is_section(header: &SectionHeader) -> bool {
-    header.flags & SHF_INFO_LINK != 0
-        || header.section_type == SectionType::REL
-        || header.section_type == SectionType::RELA
+    header.flags & SHF_INFO_LINK != 0 || header.section_type.is_relocation()
 }

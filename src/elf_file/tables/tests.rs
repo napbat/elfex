@@ -321,6 +321,52 @@ fn relocation_sections_give_targets_and_entries() {
 }
 
 #[test]
+fn relocation_sections_decode_crel_and_android_packed_sections() {
+    let encoding = Encoding::ELF64_LE;
+    let (mut elf, indices) = relocatable(encoding);
+    let rela = rela_table(&indices);
+    let rel = rel_table(&indices);
+    let crel = rela.write_crel(encoding).unwrap();
+    let android = rel.write_android_packed(encoding, Machine::X86_64).unwrap();
+    for (index, section_type, data) in [
+        (RELA_TEXT_FOO, SectionType::CREL, crel),
+        (REL_TEXT, SectionType::ANDROID_REL, android),
+    ] {
+        let index = usize_of(index);
+        elf.section_headers_mut()[index].section_type = section_type;
+        elf.section_headers_mut()[index].entsize = 1;
+        elf.set_section_data(index, data).unwrap();
+    }
+    let sections = elf.relocation_sections().unwrap();
+    let summary: Vec<_> = sections
+        .iter()
+        .map(|section| (section.index, section.target_section, &section.table))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (usize_of(RELA_TEXT_FOO), Some(usize_of(TEXT_FOO)), &rela),
+            (usize_of(REL_TEXT), Some(usize_of(TEXT)), &rel),
+        ]
+    );
+
+    // The packed section of a table with addends decodes as one.
+    elf.section_headers_mut()[usize_of(REL_TEXT)].section_type = SectionType::ANDROID_RELA;
+    let table = elf.section_relocations(usize_of(REL_TEXT)).unwrap();
+    assert!(table.with_addend);
+    assert!(table.iter().all(|entry| entry.addend == Some(0)));
+
+    // A malformed CREL section is an error.
+    elf.set_section_data(usize_of(RELA_TEXT_FOO), vec![0xff])
+        .unwrap();
+    let error = elf.relocation_sections().unwrap_err();
+    assert!(
+        matches!(error.kind(), ErrorKind::BufferTooSmall { .. }),
+        "{error}"
+    );
+}
+
+#[test]
 fn section_groups_give_flags_signatures_and_members() {
     let (elf, _) = relocatable(Encoding::ELF64_LE);
     let groups = elf.section_groups().unwrap();

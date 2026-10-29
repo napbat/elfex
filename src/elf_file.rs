@@ -17,7 +17,8 @@
 //!
 //! - [`ElfFile::symbol_list`] and [`ElfFile::lookup_symbol`] give the static symbols with
 //!   their names and sections.
-//! - [`ElfFile::relocation_sections`] gives all `SHT_REL` and `SHT_RELA` sections.
+//! - [`ElfFile::relocation_sections`] gives all relocation sections: `SHT_REL`, `SHT_RELA`,
+//!   `SHT_CREL`, `SHT_ANDROID_REL` and `SHT_ANDROID_RELA`.
 //! - [`ElfFile::section_groups`] gives all `SHT_GROUP` sections, for example COMDAT groups.
 //! - [`ElfFile::section_data_by_name`] gives the bytes of a named section.
 //!
