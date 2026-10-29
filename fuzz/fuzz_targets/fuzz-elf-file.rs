@@ -19,14 +19,19 @@ fn compressed_relocations(data: &[u8]) {
         (Encoding::ELF32_LE, Machine::ARM),
     ] {
         for with_addend in [false, true] {
-            let packed = RelocationTable::parse_android_packed(data, encoding, machine, with_addend);
+            let packed =
+                RelocationTable::parse_android_packed(data, encoding, machine, with_addend);
             if let Ok(table) = packed {
                 let bytes = table
                     .write_android_packed(encoding, machine)
                     .expect("a decoded APS2 table must encode");
                 let again =
                     RelocationTable::parse_android_packed(&bytes, encoding, machine, with_addend);
-                assert_eq!(again.ok(), Some(table), "the APS2 round trip changed the table");
+                assert_eq!(
+                    again.ok(),
+                    Some(table),
+                    "the APS2 round trip changed the table"
+                );
             }
         }
         if let Ok(table) = RelocationTable::parse_crel(data, encoding) {
@@ -34,7 +39,11 @@ fn compressed_relocations(data: &[u8]) {
                 .write_crel(encoding)
                 .expect("a decoded CREL table must encode");
             let again = RelocationTable::parse_crel(&bytes, encoding);
-            assert_eq!(again.ok(), Some(table), "the CREL round trip changed the table");
+            assert_eq!(
+                again.ok(),
+                Some(table),
+                "the CREL round trip changed the table"
+            );
         }
     }
 }
