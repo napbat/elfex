@@ -9,7 +9,8 @@
 //!
 //! [`SectionGroup`] and [`RelocationSection`] are the results of [`ElfFile`](crate::ElfFile)
 //! accessors. [`DynamicRelocations`] and [`VersionTables`] are the results of the dynamic
-//! linking accessors (see [`crate::linking`]).
+//! linking accessors, and [`LinkingView`] parses these tables once for many calls (see
+//! [`crate::linking`]).
 
 pub use crate::dynamic::{DynamicEntry, DynamicInfo, DynamicTable, DynamicTag};
 pub use crate::eh_frame::{
@@ -18,7 +19,7 @@ pub use crate::eh_frame::{
 pub use crate::elf_file::{RelocationSection, SectionGroup};
 pub use crate::group::GroupTable;
 pub use crate::hash::{GnuHashTable, SysvHashTable};
-pub use crate::linking::{DynamicRelocations, VersionTables};
+pub use crate::linking::{DynamicRelocations, LinkingView, VersionTables};
 pub use crate::note::{AuxvEntry, FileMapping, GnuAbiTag, GnuProperty, Note, NoteTable};
 pub use crate::reloc::{Relocation, RelocationTable, RelrTable};
 pub use crate::strtab::{StringTable, StringTableBuilder};

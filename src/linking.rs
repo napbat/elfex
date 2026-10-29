@@ -11,6 +11,13 @@
 //! The two types also read the notes of a core file: `core_file_mappings()` (`NT_FILE`) and
 //! `auxv()` (`NT_AUXV`).
 //!
+//! # Reuse of the parsed tables
+//!
+//! Each accessor parses the tables that it needs again. `ElfFile::linking()` and
+//! `ElfImage::linking()` return a [`LinkingView`] that parses each table only once. Use it to
+//! call more than one accessor, or to look up many symbols: each lookup then uses the hash
+//! table directly.
+//!
 //! # Table sources
 //!
 //! - `ElfImage` reads each table at the virtual address that the dynamic table gives, with
@@ -29,10 +36,16 @@ mod relocations;
 mod symbols;
 #[cfg(test)]
 mod tests;
+mod view;
+
+pub use view::LinkingView;
+
+use core::cell::OnceCell;
 
 use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
+use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::header::Machine;
 use crate::note::{
     AuxvEntry, ELF_NOTE_CORE, ELF_NOTE_GNU, FileMapping, NT_AUXV, NT_FILE, NT_GNU_BUILD_ID, Note,
@@ -42,6 +55,7 @@ use crate::prelude::*;
 use crate::program::{ProgramHeader, SegmentType};
 use crate::reloc::{Relocation, RelocationTable, RelrTable};
 use crate::strtab::StringTable;
+use crate::symbol::{SymbolSectionIndexTable, SymbolTable};
 use crate::version::{VersionDefinitionTable, VersionMap, VersionRequirementTable, VersymTable};
 use crate::{Error, Result};
 
@@ -61,13 +75,19 @@ pub struct DynamicRelocations {
     pub plt: Option<RelocationTable>,
     /// The relative relocations at `DT_RELR` (`DT_RELRSZ`), or at `DT_ANDROID_RELR`.
     pub relr: Option<RelrTable>,
+    /// The Android packed relocations (`APS2`) at `DT_ANDROID_RELA` (`DT_ANDROID_RELASZ`), or
+    /// else at `DT_ANDROID_REL` (`DT_ANDROID_RELSZ`).
+    pub android: Option<RelocationTable>,
+    /// The CREL relocations at `DT_CREL`. The CREL header gives the entry count.
+    pub crel: Option<RelocationTable>,
 }
 
 impl DynamicRelocations {
-    /// Iterate over the `Rel` and `Rela` entries of [`Self::rela`], [`Self::rel`] and
-    /// [`Self::plt`], in this order. The iterator does not include the `RELR` addresses.
+    /// Iterate over the `Rel` and `Rela` entries of [`Self::rela`], [`Self::rel`],
+    /// [`Self::android`], [`Self::crel`] and [`Self::plt`], in this order. The iterator does
+    /// not include the `RELR` addresses.
     pub fn iter(&self) -> impl Iterator<Item = &Relocation> {
-        [&self.rela, &self.rel, &self.plt]
+        [&self.rela, &self.rel, &self.android, &self.crel, &self.plt]
             .into_iter()
             .flatten()
             .flat_map(RelocationTable::iter)
@@ -172,7 +192,7 @@ pub(crate) trait AddressSpace {
 }
 
 /// Parse the dynamic table of `space`, as it is in the source.
-pub(crate) fn dynamic_table<S: AddressSpace>(space: &S) -> Result<Option<DynamicTable>> {
+pub(crate) fn dynamic_table<S: AddressSpace + ?Sized>(space: &S) -> Result<Option<DynamicTable>> {
     let Some(bytes) = space.dynamic_bytes()? else {
         return Ok(None);
     };
@@ -267,21 +287,65 @@ fn dynamic_string(strings: Option<&StringTable>, offset: u64) -> Result<String> 
         .map_err(|error| error.in_structure("DT_STRTAB"))
 }
 
-/// The dynamic table of an address space and the readers of the tables that it names.
-pub(crate) struct Linker<'a, S> {
-    /// The address space.
-    space: &'a S,
-    /// The dynamic table as it is in the source, or `None` if there is no dynamic table.
-    dynamic: Option<DynamicTable>,
+/// The tables that a [`Linker`] parsed. Each cell holds a table after its first successful
+/// parse. An error is not kept: the next call parses the table again and returns the error
+/// again.
+#[derive(Default)]
+struct Cache {
+    /// The dynamic string table.
+    strings: OnceCell<Option<StringTable>>,
+    /// The dynamic symbol table.
+    symbols: OnceCell<Option<SymbolTable>>,
+    /// The extended section indices of the dynamic symbols.
+    indices: OnceCell<Option<SymbolSectionIndexTable>>,
+    /// The version tables and their map.
+    versions: OnceCell<(VersionTables, VersionMap)>,
+    /// The System V hash table.
+    sysv_hash: OnceCell<Option<SysvHashTable>>,
+    /// The GNU hash table.
+    gnu_hash: OnceCell<Option<GnuHashTable>>,
+    /// The relocation tables of the dynamic table.
+    relocations: OnceCell<DynamicRelocations>,
+    /// The indices of the named dynamic symbols, sorted by name and then by index, for a
+    /// lookup without a hash table.
+    sorted_names: OnceCell<Vec<u32>>,
 }
 
-impl<'a, S: AddressSpace> Linker<'a, S> {
+/// Return the value in `cell`. If `cell` is empty, fill it with the result of `load`, or
+/// return the error of `load`.
+fn cached<T>(cell: &OnceCell<T>, load: impl FnOnce() -> Result<T>) -> Result<&T> {
+    if let Some(value) = cell.get() {
+        return Ok(value);
+    }
+    let value = load()?;
+    Ok(cell.get_or_init(|| value))
+}
+
+/// The dynamic table of an address space and the readers of the tables that it names.
+///
+/// The linker keeps each table that it parsed, so a second call does not parse it again.
+pub(crate) struct Linker<'a> {
+    /// The address space.
+    space: &'a (dyn AddressSpace + Sync),
+    /// The dynamic table as it is in the source, or `None` if there is no dynamic table.
+    dynamic: Option<DynamicTable>,
+    /// The parsed tables.
+    cache: Cache,
+}
+
+impl<'a> Linker<'a> {
     /// Parse the dynamic table of `space`.
-    pub(crate) fn load(space: &'a S) -> Result<Self> {
+    pub(crate) fn load(space: &'a (dyn AddressSpace + Sync)) -> Result<Self> {
         Ok(Self {
             space,
             dynamic: dynamic_table(space)?,
+            cache: Cache::default(),
         })
+    }
+
+    /// Return the dynamic table, or `None` if there is no dynamic table.
+    pub(crate) fn dynamic(&self) -> Option<&DynamicTable> {
+        self.dynamic.as_ref()
     }
 
     /// Return the class and the byte order of the address space.
@@ -343,7 +407,12 @@ impl<'a, S: AddressSpace> Linker<'a, S> {
     /// `ElfFile` prefers the `sh_link` string table of the `SHT_DYNAMIC` section. Else the
     /// table is at `DT_STRTAB` with the size `DT_STRSZ`. Without `DT_STRSZ`, the table goes
     /// to the end of its segment.
-    pub(crate) fn strings(&self) -> Result<Option<StringTable>> {
+    pub(crate) fn strings(&self) -> Result<Option<&StringTable>> {
+        cached(&self.cache.strings, || self.load_strings()).map(Option::as_ref)
+    }
+
+    /// Parse the dynamic string table (see [`Self::strings`]).
+    fn load_strings(&self) -> Result<Option<StringTable>> {
         if let Some(section) = self.space.table_section(TableSection::DynamicStrings)? {
             return Ok(Some(StringTable::parse(section.data)));
         }
@@ -355,6 +424,12 @@ impl<'a, S: AddressSpace> Linker<'a, S> {
             None => self.slice(address, "DT_STRTAB")?,
         };
         Ok(Some(StringTable::parse(bytes)))
+    }
+
+    /// Return the dynamic string table and drop the other tables.
+    pub(crate) fn into_strings(self) -> Result<Option<StringTable>> {
+        self.strings()?;
+        Ok(self.cache.strings.into_inner().flatten())
     }
 
     /// Return the names of the `DT_NEEDED` entries, in table order.
@@ -369,7 +444,7 @@ impl<'a, S: AddressSpace> Linker<'a, S> {
         let strings = self.strings()?;
         offsets
             .into_iter()
-            .map(|offset| dynamic_string(strings.as_ref(), offset))
+            .map(|offset| dynamic_string(strings, offset))
             .collect()
     }
 
@@ -378,8 +453,7 @@ impl<'a, S: AddressSpace> Linker<'a, S> {
         let Some(offset) = self.value(tag) else {
             return Ok(None);
         };
-        let strings = self.strings()?;
-        dynamic_string(strings.as_ref(), offset).map(Some)
+        dynamic_string(self.strings()?, offset).map(Some)
     }
 
     /// Return the class-sized words of the array at the pointer tag `address_tag` with the

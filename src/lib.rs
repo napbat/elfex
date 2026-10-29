@@ -34,7 +34,9 @@
 //!
 //! `ElfFile` and `ElfImage` also read the tables for you, for example
 //! [`ElfFile::dynamic_symbol_list`], [`ElfFile::notes`] and [`ElfImage::core_file_mappings`].
-//! `ElfFile` also reads the section tables of a relocatable file:
+//! Each of these accessors parses its tables again. [`ElfFile::linking`] and
+//! [`ElfImage::linking`] give a [`LinkingView`] that parses each dynamic linking table only
+//! once. `ElfFile` also reads the section tables of a relocatable file:
 //!
 //! - [`ElfFile::symbol_list`] and [`ElfFile::lookup_symbol`] give each symbol as a
 //!   [`NamedSymbol`] with its name and its section.
@@ -211,7 +213,7 @@ pub use group::GroupTable;
 pub use hash::{GnuHashTable, SysvHashTable};
 pub use header::{FileHeader, FileType, Machine};
 pub use ident::{Ident, OsAbi};
-pub use linking::{DynamicRelocations, VersionTables};
+pub use linking::{DynamicRelocations, LinkingView, VersionTables};
 pub use note::{AuxvEntry, FileMapping, GnuAbiTag, GnuProperty, Note, NoteTable};
 pub use program::{ProgramHeader, SegmentType};
 #[cfg(feature = "std")]

@@ -1,6 +1,6 @@
 //! Read the dynamic relocations and the symbol hash tables.
 
-use super::{AddressSpace, DynamicRelocations, Linker};
+use super::{DynamicRelocations, Linker, cached};
 use crate::dynamic::DynamicTag;
 use crate::hash::{GnuHashTable, SysvHashTable, sysv_hash_entry_size};
 use crate::prelude::*;
@@ -19,9 +19,20 @@ struct RelocationTags {
     with_addend: bool,
 }
 
-impl<S: AddressSpace> Linker<'_, S> {
+impl Linker<'_> {
     /// Return the relocation tables that the dynamic table names.
-    pub(crate) fn relocations(&self) -> Result<DynamicRelocations> {
+    pub(crate) fn relocations(&self) -> Result<&DynamicRelocations> {
+        cached(&self.cache.relocations, || self.load_relocations())
+    }
+
+    /// Return the relocation tables that the dynamic table names, and drop the other tables.
+    pub(crate) fn into_relocations(self) -> Result<DynamicRelocations> {
+        self.relocations()?;
+        Ok(self.cache.relocations.into_inner().unwrap_or_default())
+    }
+
+    /// Parse the relocation tables that the dynamic table names.
+    fn load_relocations(&self) -> Result<DynamicRelocations> {
         Ok(DynamicRelocations {
             rela: self.relocation_table(&RelocationTags {
                 address: DynamicTag::RELA,
@@ -37,6 +48,8 @@ impl<S: AddressSpace> Linker<'_, S> {
             })?,
             plt: self.plt_relocations()?,
             relr: self.relr()?,
+            android: self.android_relocations()?,
+            crel: self.crel_relocations()?,
         })
     }
 
@@ -133,27 +146,82 @@ impl<S: AddressSpace> Linker<'_, S> {
             .map_err(|error| error.in_structure(structure).at_address(address))
     }
 
-    /// Return the System V hash table at `DT_HASH`.
-    pub(crate) fn sysv_hash(&self) -> Result<Option<SysvHashTable>> {
-        let Some(address) = self.pointer(DynamicTag::HASH) else {
+    /// Return the Android packed relocations at `DT_ANDROID_RELA`, or else at
+    /// `DT_ANDROID_REL`.
+    fn android_relocations(&self) -> Result<Option<RelocationTable>> {
+        let (address_tag, size_tag, with_addend) = if self.value(DynamicTag::ANDROID_RELA).is_some()
+        {
+            (DynamicTag::ANDROID_RELA, DynamicTag::ANDROID_RELASZ, true)
+        } else {
+            (DynamicTag::ANDROID_REL, DynamicTag::ANDROID_RELSZ, false)
+        };
+        let Some(address) = self.pointer(address_tag) else {
             return Ok(None);
         };
-        let encoding = self.encoding();
-        let entry_size = sysv_hash_entry_size(self.space.machine(), encoding.class);
-        let bytes = self.slice(address, "DT_HASH")?;
-        SysvHashTable::parse(bytes, encoding, entry_size)
+        let structure = format!("{address_tag}");
+        let size = self.required_size(size_tag, &structure)?;
+        let bytes = self.bytes(address, size, &structure)?;
+        RelocationTable::parse_android_packed(
+            bytes,
+            self.encoding(),
+            self.space.machine(),
+            with_addend,
+        )
+        .map(Some)
+        .map_err(|error| error.in_structure(structure).at_address(address))
+    }
+
+    /// Return the CREL relocations at `DT_CREL`. The table has no size tag: it goes to the end
+    /// of its segment, and the CREL header gives the entry count.
+    fn crel_relocations(&self) -> Result<Option<RelocationTable>> {
+        let Some(address) = self.pointer(DynamicTag::CREL) else {
+            return Ok(None);
+        };
+        let bytes = self.slice(address, "DT_CREL")?;
+        RelocationTable::parse_crel(bytes, self.encoding())
             .map(Some)
-            .map_err(|error| error.at_address(address))
+            .map_err(|error| error.in_structure("DT_CREL").at_address(address))
+    }
+
+    /// Return the System V hash table at `DT_HASH`.
+    pub(crate) fn sysv_hash(&self) -> Result<Option<&SysvHashTable>> {
+        cached(&self.cache.sysv_hash, || {
+            let Some(address) = self.pointer(DynamicTag::HASH) else {
+                return Ok(None);
+            };
+            let encoding = self.encoding();
+            let entry_size = sysv_hash_entry_size(self.space.machine(), encoding.class);
+            let bytes = self.slice(address, "DT_HASH")?;
+            SysvHashTable::parse(bytes, encoding, entry_size)
+                .map(Some)
+                .map_err(|error| error.at_address(address))
+        })
+        .map(Option::as_ref)
+    }
+
+    /// Return the System V hash table and drop the other tables.
+    pub(crate) fn into_sysv_hash(self) -> Result<Option<SysvHashTable>> {
+        self.sysv_hash()?;
+        Ok(self.cache.sysv_hash.into_inner().flatten())
     }
 
     /// Return the GNU hash table at `DT_GNU_HASH`.
-    pub(crate) fn gnu_hash(&self) -> Result<Option<GnuHashTable>> {
-        let Some(address) = self.pointer(DynamicTag::GNU_HASH) else {
-            return Ok(None);
-        };
-        let bytes = self.slice(address, "DT_GNU_HASH")?;
-        GnuHashTable::parse(bytes, self.encoding())
-            .map(Some)
-            .map_err(|error| error.at_address(address))
+    pub(crate) fn gnu_hash(&self) -> Result<Option<&GnuHashTable>> {
+        cached(&self.cache.gnu_hash, || {
+            let Some(address) = self.pointer(DynamicTag::GNU_HASH) else {
+                return Ok(None);
+            };
+            let bytes = self.slice(address, "DT_GNU_HASH")?;
+            GnuHashTable::parse(bytes, self.encoding())
+                .map(Some)
+                .map_err(|error| error.at_address(address))
+        })
+        .map(Option::as_ref)
+    }
+
+    /// Return the GNU hash table and drop the other tables.
+    pub(crate) fn into_gnu_hash(self) -> Result<Option<GnuHashTable>> {
+        self.gnu_hash()?;
+        Ok(self.cache.gnu_hash.into_inner().flatten())
     }
 }

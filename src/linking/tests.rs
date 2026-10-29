@@ -15,6 +15,7 @@ use crate::version::{
     VER_FLG_BASE, VersionDefinition, VersionNeedEntry, VersionRequirement, VersymTable,
 };
 
+mod packed;
 mod sections;
 
 /// One contiguous memory range at `base`, a dynamic table and note tables.
@@ -205,8 +206,8 @@ fn elf32_symbols_with_sysv_hash() {
     let soname = linker.string_entry(DynamicTag::SONAME).unwrap();
     assert_eq!(soname.as_deref(), Some("libtest.so"));
     assert_eq!(linker.string_entry(DynamicTag::RUNPATH).unwrap(), None);
-    assert_eq!(linker.symbols().unwrap(), Some(symbols));
-    assert_eq!(linker.sysv_hash().unwrap(), Some(hash));
+    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
+    assert_eq!(linker.sysv_hash().unwrap(), Some(&hash));
     assert_eq!(linker.gnu_hash().unwrap(), None);
     let found = linker.lookup("bar").unwrap().unwrap();
     assert_eq!((found.index, found.name.as_str()), (2, "bar"));
@@ -268,12 +269,12 @@ fn elf64_symbol_count_from_gnu_hash_and_relocations() {
     ]);
 
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.symbols().unwrap(), Some(symbols.clone()));
+    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
     let relocations = linker.relocations().unwrap();
     assert_eq!(relocations.rela, Some(rela));
     assert_eq!(
-        (relocations.rel, relocations.plt, relocations.relr),
-        (None, None, None)
+        (&relocations.rel, &relocations.plt, &relocations.relr),
+        (&None, &None, &None)
     );
     for name in ["foo", "baz"] {
         let found = linker.lookup(name).unwrap().unwrap();
@@ -301,7 +302,7 @@ fn symbol_count_from_string_table_distance() {
         (DynamicTag::SYMENT, 24),
     ]);
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.symbols().unwrap(), Some(symbols));
+    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
     // A linear search finds the symbol without a hash table.
     let found = linker.lookup("abc").unwrap().unwrap();
     assert_eq!(found.index, 1);
@@ -341,7 +342,7 @@ fn mips_symbol_count_from_symtabno() {
         (DynamicTag::MIPS_SYMTABNO, 3),
     ]);
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.symbols().unwrap(), Some(symbols.clone()));
+    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
     assert_eq!(names(&linker.symbol_list().unwrap()), ["foo", "bar"]);
 
     // On other machines, the tag value is not a symbol count. The hash table gives it.
@@ -459,7 +460,7 @@ fn versions_through_the_dynamic_table() {
     ]);
 
     let linker = Linker::load(&flat).unwrap();
-    let tables = linker.versions(None).unwrap();
+    let (tables, _) = linker.versions().unwrap();
     assert_eq!(tables.versym, Some(versym));
     assert_eq!(tables.definitions, Some(definitions));
     assert_eq!(tables.requirements, Some(requirements));
@@ -495,8 +496,11 @@ fn missing_tables_give_empty_results() {
     assert_eq!(linker.string_entry(DynamicTag::SONAME).unwrap(), None);
     assert_eq!(linker.strings().unwrap(), None);
     assert_eq!(linker.symbols().unwrap(), None);
-    assert_eq!(linker.relocations().unwrap(), DynamicRelocations::default());
-    assert_eq!(linker.versions(None).unwrap(), VersionTables::default());
+    assert_eq!(
+        linker.relocations().unwrap(),
+        &DynamicRelocations::default()
+    );
+    assert_eq!(linker.versions().unwrap().0, VersionTables::default());
     assert_eq!(linker.lookup("foo").unwrap(), None);
     let empty: Vec<u64> = Vec::new();
     let init = linker.array(DynamicTag::INIT_ARRAY, DynamicTag::INIT_ARRAYSZ);
@@ -693,11 +697,13 @@ fn relocation_iterator_covers_all_tables() {
     let relocations = DynamicRelocations {
         rela: Some(table(1, true)),
         rel: Some(table(2, false)),
-        plt: Some(table(3, true)),
+        plt: Some(table(5, true)),
         relr: None,
+        android: Some(table(3, true)),
+        crel: Some(table(4, false)),
     };
     let offsets: Vec<u64> = relocations.iter().map(|r| r.offset).collect();
-    assert_eq!(offsets, [1, 2, 3]);
+    assert_eq!(offsets, [1, 2, 3, 4, 5]);
 }
 
 #[test]
@@ -731,7 +737,7 @@ fn plt_relocations_follow_dt_pltrel() {
             (table_tag, address),
             (size_tag, len(&bytes)),
         ]);
-        let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
+        let relocations = Linker::load(&flat).unwrap().into_relocations().unwrap();
         assert_eq!(relocations.plt.as_ref(), Some(&table));
         let other = if with_addend {
             relocations.rela
@@ -746,7 +752,7 @@ fn plt_relocations_follow_dt_pltrel() {
 fn zero_size_tables_do_not_read_memory() {
     let mut flat = Flat::new(Encoding::ELF64_LE, Machine::X86_64);
     flat.set_dynamic(&[(DynamicTag::RELA, 0x10), (DynamicTag::RELASZ, 0)]);
-    let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
+    let relocations = Linker::load(&flat).unwrap().into_relocations().unwrap();
     assert_eq!(relocations.rela, Some(RelocationTable::new(true)));
 }
 
@@ -769,19 +775,32 @@ fn symbol_table_size_overflow_is_an_error() {
 #[test]
 fn versym_size_comes_from_the_symbol_count() {
     let encoding = Encoding::ELF32_LE;
-    let mut flat = Flat::new(encoding, Machine::I386);
+    let mut flat = Flat::new(encoding, Machine::MIPS);
+    let symbols = SymbolTable {
+        symbols: vec![Symbol::default(); 3],
+    };
+    let symtab = flat.place(&symbols.write(encoding).unwrap());
     let versym = flat.place(&[1, 0, 2, 0]);
     flat.set_dynamic(&[(DynamicTag::VERSYM, versym)]);
-    let linker = Linker::load(&flat).unwrap();
     // Without a symbol table, the size of the table is unknown.
-    assert_eq!(linker.versions(None).unwrap().versym, None);
+    let linker = Linker::load(&flat).unwrap();
+    assert_eq!(linker.versions().unwrap().0.versym, None);
+    let with_count = |count: u64| {
+        [
+            (DynamicTag::VERSYM, versym),
+            (DynamicTag::SYMTAB, symtab),
+            (DynamicTag::MIPS_SYMTABNO, count),
+        ]
+    };
+    flat.set_dynamic(&with_count(2));
     assert_eq!(
-        linker.versions(Some(2)).unwrap().versym,
+        Linker::load(&flat).unwrap().into_versions().unwrap().versym,
         Some(VersymTable {
             entries: vec![1, 2]
         })
     );
-    let error = linker.versions(Some(3)).unwrap_err();
+    flat.set_dynamic(&with_count(3));
+    let error = Linker::load(&flat).unwrap().into_versions().unwrap_err();
     assert!(
         matches!(error.kind(), ErrorKind::InvalidTable(_)),
         "{error}"

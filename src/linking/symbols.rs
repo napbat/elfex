@@ -1,6 +1,6 @@
 //! Read the dynamic symbols, their names and their versions.
 
-use super::{AddressSpace, Linker, TableSection, VersionTables};
+use super::{Linker, TableSection, VersionTables, cached};
 use crate::dynamic::DynamicTag;
 use crate::header::Machine;
 use crate::prelude::*;
@@ -10,7 +10,7 @@ use crate::symbol::{
     NamedSymbol, Symbol, SymbolBinding, SymbolNames, SymbolSectionIndexTable, SymbolTable,
     SymbolVisibility,
 };
-use crate::version::{VersionDefinitionTable, VersionRequirementTable, VersymTable};
+use crate::version::{VersionDefinitionTable, VersionMap, VersionRequirementTable, VersymTable};
 use crate::{Error, Result};
 
 /// Return the name bytes of the symbol at `index`, or `None` if they are not available.
@@ -40,7 +40,7 @@ fn is_export(symbol: &Symbol) -> bool {
         && visibility != SymbolVisibility::INTERNAL
 }
 
-impl<S: AddressSpace> Linker<'_, S> {
+impl Linker<'_> {
     /// Return the dynamic symbol table.
     ///
     /// `ElfFile` prefers the `SHT_DYNSYM` section. Else the table is at `DT_SYMTAB`. The
@@ -51,7 +51,18 @@ impl<S: AddressSpace> Linker<'_, S> {
     /// 3. The symbol count of the `DT_GNU_HASH` table, or a larger symbol index that a
     ///    dynamic relocation refers to.
     /// 4. The distance from `DT_SYMTAB` to `DT_STRTAB`, if the string table follows.
-    pub(crate) fn symbols(&self) -> Result<Option<SymbolTable>> {
+    pub(crate) fn symbols(&self) -> Result<Option<&SymbolTable>> {
+        cached(&self.cache.symbols, || self.load_symbols()).map(Option::as_ref)
+    }
+
+    /// Return the dynamic symbol table and drop the other tables.
+    pub(crate) fn into_symbols(self) -> Result<Option<SymbolTable>> {
+        self.symbols()?;
+        Ok(self.cache.symbols.into_inner().flatten())
+    }
+
+    /// Parse the dynamic symbol table (see [`Self::symbols`]).
+    fn load_symbols(&self) -> Result<Option<SymbolTable>> {
         let encoding = self.encoding();
         if let Some(section) = self.space.table_section(TableSection::DynamicSymbols)? {
             return SymbolTable::parse_with_entsize(section.data, encoding, section.entsize)
@@ -115,29 +126,32 @@ impl<S: AddressSpace> Linker<'_, S> {
     ///
     /// `ElfFile` prefers the `SHT_SYMTAB_SHNDX` section that links to the `SHT_DYNSYM`
     /// section. Else the table is at `DT_SYMTAB_SHNDX`, with one entry for each symbol.
-    fn symbol_indices(&self, count: usize) -> Result<Option<SymbolSectionIndexTable>> {
-        let encoding = self.encoding();
-        if let Some(section) = self
-            .space
-            .table_section(TableSection::DynamicSymbolIndices)?
-        {
-            return SymbolSectionIndexTable::parse(section.data, encoding)
-                .map(Some)
-                .map_err(|error| error.in_structure("SHT_SYMTAB_SHNDX"));
-        }
-        let Some(address) = self.pointer(DynamicTag::SYMTAB_SHNDX) else {
-            return Ok(None);
-        };
-        // A table in memory has fewer than `u64::MAX / 4` entries. `bytes` rejects a size
-        // that the segment does not hold.
-        let size = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(4);
-        let bytes = self.bytes(address, size, "DT_SYMTAB_SHNDX")?;
-        // `size` is a multiple of 4, so the parse cannot fail.
-        SymbolSectionIndexTable::parse(bytes, encoding).map(Some)
+    fn symbol_indices(&self, count: usize) -> Result<Option<&SymbolSectionIndexTable>> {
+        cached(&self.cache.indices, || {
+            let encoding = self.encoding();
+            if let Some(section) = self
+                .space
+                .table_section(TableSection::DynamicSymbolIndices)?
+            {
+                return SymbolSectionIndexTable::parse(section.data, encoding)
+                    .map(Some)
+                    .map_err(|error| error.in_structure("SHT_SYMTAB_SHNDX"));
+            }
+            let Some(address) = self.pointer(DynamicTag::SYMTAB_SHNDX) else {
+                return Ok(None);
+            };
+            // A table in memory has fewer than `u64::MAX / 4` entries. `bytes` rejects a size
+            // that the segment does not hold.
+            let size = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(4);
+            let bytes = self.bytes(address, size, "DT_SYMTAB_SHNDX")?;
+            // `size` is a multiple of 4, so the parse cannot fail.
+            SymbolSectionIndexTable::parse(bytes, encoding).map(Some)
+        })
+        .map(Option::as_ref)
     }
 
     /// Return the extended section indices of `symbols`, if a symbol needs them.
-    fn indices_for(&self, symbols: &SymbolTable) -> Result<Option<SymbolSectionIndexTable>> {
+    fn indices_for(&self, symbols: &SymbolTable) -> Result<Option<&SymbolSectionIndexTable>> {
         if symbols.iter().any(|symbol| symbol.shndx == SHN_XINDEX) {
             self.symbol_indices(symbols.len())
         } else {
@@ -145,18 +159,33 @@ impl<S: AddressSpace> Linker<'_, S> {
         }
     }
 
-    /// Return the version tables. `symbol_count` is the number of dynamic symbols, if the
-    /// caller knows it. The `DT_VERSYM` table has one value for each dynamic symbol.
-    pub(crate) fn versions(&self, symbol_count: Option<usize>) -> Result<VersionTables> {
-        Ok(VersionTables {
-            versym: self.versym(symbol_count)?,
-            definitions: self.version_definitions()?,
-            requirements: self.version_requirements()?,
+    /// Return the version tables and the map from the version indexes to the version names.
+    pub(crate) fn versions(&self) -> Result<&(VersionTables, VersionMap)> {
+        cached(&self.cache.versions, || {
+            let tables = VersionTables {
+                versym: self.versym()?,
+                definitions: self.version_definitions()?,
+                requirements: self.version_requirements()?,
+            };
+            let map = tables.map();
+            Ok((tables, map))
         })
     }
 
-    /// Return the `Elf_Versym` values.
-    fn versym(&self, symbol_count: Option<usize>) -> Result<Option<VersymTable>> {
+    /// Return the version tables and drop the other tables.
+    pub(crate) fn into_versions(self) -> Result<VersionTables> {
+        self.versions()?;
+        Ok(self
+            .cache
+            .versions
+            .into_inner()
+            .map(|(tables, _)| tables)
+            .unwrap_or_default())
+    }
+
+    /// Return the `Elf_Versym` values. The `DT_VERSYM` table has one value for each dynamic
+    /// symbol.
+    fn versym(&self) -> Result<Option<VersymTable>> {
         let encoding = self.encoding();
         if let Some(section) = self.space.table_section(TableSection::Versym)? {
             return VersymTable::parse(section.data, encoding)
@@ -166,16 +195,14 @@ impl<S: AddressSpace> Linker<'_, S> {
         let Some(address) = self.pointer(DynamicTag::VERSYM) else {
             return Ok(None);
         };
-        let count = match symbol_count {
-            Some(count) => count,
-            None => match self.symbols()? {
-                Some(symbols) => symbols.len(),
-                None => return Ok(None),
-            },
+        let Some(symbols) = self.symbols()? else {
+            return Ok(None);
         };
         // A table in memory has fewer than `u64::MAX / 2` entries. `bytes` rejects a size
         // that the segment does not hold.
-        let size = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(2);
+        let size = u64::try_from(symbols.len())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2);
         let bytes = self.bytes(address, size, "DT_VERSYM")?;
         // `size` is a multiple of 2, so the parse cannot fail.
         VersymTable::parse(bytes, encoding).map(Some)
@@ -217,22 +244,32 @@ impl<S: AddressSpace> Linker<'_, S> {
             .map_err(|error| error.in_structure("DT_VERNEED").at_address(address))
     }
 
+    /// Return the tables that describe a dynamic symbol. `indices` are the extended section
+    /// indices, if the caller needs them.
+    fn names<'t>(
+        &'t self,
+        strings: Option<&'t StringTable>,
+        indices: Option<&'t SymbolSectionIndexTable>,
+    ) -> Result<SymbolNames<'t>> {
+        let (versions, map) = self.versions()?;
+        Ok(SymbolNames {
+            strings,
+            structure: "DT_STRTAB",
+            indices,
+            versym: versions.versym.as_ref(),
+            map: Some(map),
+        })
+    }
+
     /// Return all dynamic symbols except the null symbol at index 0.
     pub(crate) fn symbol_list(&self) -> Result<Vec<NamedSymbol>> {
         let Some(symbols) = self.symbols()? else {
             return Ok(Vec::new());
         };
         let strings = self.strings()?;
-        let versions = self.versions(Some(symbols.len()))?;
-        let map = versions.map();
-        let indices = self.indices_for(&symbols)?;
-        let names = SymbolNames {
-            strings: strings.as_ref(),
-            structure: "DT_STRTAB",
-            indices: indices.as_ref(),
-            versym: versions.versym.as_ref(),
-            map: Some(&map),
-        };
+        self.versions()?;
+        let indices = self.indices_for(symbols)?;
+        let names = self.names(strings, indices)?;
         symbols
             .iter()
             .enumerate()
@@ -256,22 +293,26 @@ impl<S: AddressSpace> Linker<'_, S> {
     }
 
     /// Find the dynamic symbol with the name `name`: with the GNU hash table, else with the
-    /// System V hash table, else with a linear search.
+    /// System V hash table, else with a binary search of the names. If more than one symbol
+    /// has the name, the binary search finds the first one.
     pub(crate) fn lookup(&self, name: &str) -> Result<Option<NamedSymbol>> {
         let Some(symbols) = self.symbols()? else {
             return Ok(None);
         };
         let strings = self.strings()?;
         let name = name.as_bytes();
-        let symbol_name = |index: u32| name_bytes(&symbols, strings.as_ref(), index);
+        let symbol_name = |index: u32| name_bytes(symbols, strings, index);
         let found = if let Some(table) = self.gnu_hash()? {
             table.lookup(name, symbol_name)
         } else if let Some(table) = self.sysv_hash()? {
             table.lookup(name, symbol_name)
         } else {
-            (1..symbols.len())
-                .filter_map(|index| u32::try_from(index).ok())
-                .find(|index| symbol_name(*index) == Some(name))
+            let sorted = self.sorted_names(symbols, strings);
+            let first = sorted.partition_point(|index| symbol_name(*index) < Some(name));
+            sorted
+                .get(first)
+                .copied()
+                .filter(|index| symbol_name(*index) == Some(name))
         };
         let Some((index, symbol)) = found.and_then(|index| {
             let index = usize::try_from(index).ok()?;
@@ -279,20 +320,29 @@ impl<S: AddressSpace> Linker<'_, S> {
         }) else {
             return Ok(None);
         };
-        let versions = self.versions(Some(symbols.len()))?;
-        let map = versions.map();
+        self.versions()?;
         let indices = if symbol.shndx == SHN_XINDEX {
             self.symbol_indices(symbols.len())?
         } else {
             None
         };
-        let names = SymbolNames {
-            strings: strings.as_ref(),
-            structure: "DT_STRTAB",
-            indices: indices.as_ref(),
-            versym: versions.versym.as_ref(),
-            map: Some(&map),
-        };
-        names.describe(index, symbol).map(Some)
+        self.names(strings, indices)?
+            .describe(index, symbol)
+            .map(Some)
+    }
+
+    /// Return the indices of the dynamic symbols with a name, except index 0, sorted by name
+    /// and then by index.
+    fn sorted_names(&self, symbols: &SymbolTable, strings: Option<&StringTable>) -> &[u32] {
+        self.cache.sorted_names.get_or_init(|| {
+            let name = |index: &u32| name_bytes(symbols, strings, *index);
+            let mut sorted: Vec<u32> = (1..symbols.len())
+                .filter_map(|index| u32::try_from(index).ok())
+                .filter(|index| name(index).is_some())
+                .collect();
+            // The sort is stable, so equal names stay in index order.
+            sorted.sort_by(|a, b| name(a).cmp(&name(b)));
+            sorted
+        })
     }
 }

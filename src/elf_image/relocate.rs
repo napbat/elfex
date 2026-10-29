@@ -66,10 +66,12 @@ impl ElfImage {
     /// for a loader-mapped source with a known runtime base, and 0 for all other images.
     /// The function applies only these relocations, in this order:
     ///
-    /// 1. Each relative `Rela` entry (`Relocation::is_relative`) of `DT_RELA` and
-    ///    `DT_JMPREL`: write the new load bias plus the addend to the word.
-    /// 2. Each relative `Rel` entry of `DT_REL` and `DT_JMPREL`: add the new load bias minus
-    ///    the current load bias to the word.
+    /// 1. Each relative `Rela` entry (`Relocation::is_relative`) of `DT_RELA`,
+    ///    `DT_ANDROID_RELA`, `DT_CREL` (with addends) and `DT_JMPREL`: write the new load bias
+    ///    plus the addend to the word.
+    /// 2. Each relative `Rel` entry of `DT_REL`, `DT_ANDROID_REL`, `DT_CREL` (without
+    ///    addends) and `DT_JMPREL`: add the new load bias minus the current load bias to the
+    ///    word.
     /// 3. Each `DT_RELR` address: add the new load bias minus the current load bias to the
     ///    word.
     ///

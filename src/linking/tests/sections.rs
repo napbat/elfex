@@ -57,7 +57,7 @@ fn table_sections_replace_the_dynamic_tables() {
     let list = linker.symbol_list().unwrap();
     assert_eq!(names(&list), ["foo"]);
     assert_eq!(list[0].section_index, Some(0x1_0002));
-    assert_eq!(linker.versions(None).unwrap().versym, Some(versym));
+    assert_eq!(linker.versions().unwrap().0.versym, Some(versym));
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn malformed_version_tables_have_the_tag_and_the_address() {
         let mut flat = Flat::new(Encoding::ELF32_BE, Machine::PPC);
         let address = flat.place(&[0; 3]);
         flat.set_dynamic(&[(tag, address)]);
-        let error = Linker::load(&flat).unwrap().versions(None).unwrap_err();
+        let error = Linker::load(&flat).unwrap().into_versions().unwrap_err();
         assert!(is_table_error(&error), "{error}");
         assert_eq!(structure(&error), Some(expected), "{error}");
         assert_eq!(error.context().unwrap().address, Some(address));

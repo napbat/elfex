@@ -1,9 +1,12 @@
 //! Check at compile time that the public types implement `Send` and `Sync`.
+//!
+//! `LinkingView` is the exception: it is `Send`, but not `Sync`, because it keeps the parsed
+//! tables in `OnceCell` values.
 
 use elfex::{
     AuxvEntry, BuilderLayout, BuiltSymbolTable, Cie, DynamicEntry, DynamicInfo, DynamicRelocations,
     DynamicTable, EhFrameHdr, ElfFile, ElfHeaders, ElfImage, Error, ErrorContext, Fde, FileMapping,
-    GnuAbiTag, GnuHashTable, GnuProperty, GroupTable, NamedSymbol, Note, NoteTable,
+    GnuAbiTag, GnuHashTable, GnuProperty, GroupTable, LinkingView, NamedSymbol, Note, NoteTable,
     RelocationSection, RelocationTable, RelrTable, SectionGroup, SectionPlacement, SectionRef,
     Segment, StringTable, StringTableBuilder, SymbolSectionIndexTable, SymbolTable,
     SymbolTableBuilder, SymbolVersion, SysvHashTable, ValidationIssue, ValidationResult,
@@ -12,6 +15,13 @@ use elfex::{
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
+
+fn assert_send<T: Send>() {}
+
+#[test]
+fn linking_view_is_send() {
+    assert_send::<LinkingView<'static>>();
+}
 
 #[test]
 fn public_types_are_send_and_sync() {

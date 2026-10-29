@@ -3,8 +3,13 @@
 //! Each fixture is a shared object with `.dynsym`, `.dynstr`, hash tables, version tables,
 //! relocations, a build ID note, `.init_array` and `.dynamic`. The tests read it as a raw
 //! `ElfFile`, as a raw `ElfImage`, and as a loader-mapped `ElfImage` at a runtime base.
+//!
+//! - `packed.rs` encodes the relocations of a fixture in the Android packed and CREL formats.
+//! - `view.rs` checks that `LinkingView` gives the same results as the accessors.
 
 mod fixture;
+mod packed;
+mod view;
 
 use elfex::{
     AuxvEntry, DynamicRelocations, DynamicTable, DynamicTag, EhFrameHdr, ElfFile, ElfImage,
