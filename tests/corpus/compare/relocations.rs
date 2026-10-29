@@ -2,16 +2,16 @@
 
 use std::collections::BTreeMap;
 
-use elfex::{DynamicTag, ElfFile, Machine, Relocation, RelocationSection, RelrTable, SectionType};
+use elfex::{
+    DynamicTag, ElfFile, Machine, Relocation, RelocationSection, RelocationTable, RelrTable,
+    SectionType,
+};
 use serde_json::Value;
 
 use super::numbers;
 use super::symbols::display_name;
 use crate::reference::{Reference, array, get, number, string};
 use crate::report::{DYNAMIC_RELOCATIONS, Findings, RELOCATIONS};
-
-/// `SHT_ANDROID_RELR`: the Android variant of `SHT_RELR`.
-const SHT_ANDROID_RELR: u32 = 0x6fff_ff00;
 
 /// Compare the relocation sections (`Relocations`) and the relocation tables of the dynamic
 /// table (`--dyn-relocations`).
@@ -45,14 +45,15 @@ fn sections(file: &ElfFile, json: &Value, findings: &mut Findings) {
             .get(index)
             .map(|header| header.section_type);
         match section_type {
-            Some(SectionType::REL | SectionType::RELA) => match by_index.remove(&index) {
+            Some(kind) if kind.is_relocation() => match by_index.remove(&index) {
                 Some(section) => {
                     let names = names.for_table(file, section.symbol_table, findings);
                     table(file, section, entries, names, findings);
+                    packed_dynamic_table(file, section, findings);
                 }
                 None => findings.fail(RELOCATIONS, format!("section {index} is not listed")),
             },
-            Some(kind) if kind == SectionType::RELR || kind.0 == SHT_ANDROID_RELR => {
+            Some(SectionType::RELR | SectionType::ANDROID_RELR) => {
                 relr_section(file, index, entries, findings);
             }
             other => findings.fail(
@@ -69,7 +70,7 @@ fn sections(file: &ElfFile, json: &Value, findings: &mut Findings) {
     }
 }
 
-/// Compare the entries of one `SHT_REL` or `SHT_RELA` section.
+/// Compare the entries of one relocation section.
 fn table(
     file: &ElfFile,
     section: &RelocationSection,
@@ -85,6 +86,10 @@ fn table(
         relocations.len(),
     );
     let machine = file.machine();
+    let android_rel = file
+        .section_headers()
+        .get(section.index)
+        .is_some_and(|header| header.section_type == SectionType::ANDROID_REL);
     for (number_in_table, (item, relocation)) in entries.iter().zip(relocations).enumerate() {
         let item = &item["Relocation"];
         let what = format!("section {} entry {number_in_table}", section.index);
@@ -108,6 +113,8 @@ fn table(
             Some(relocation.type_name(machine).unwrap_or("Unknown")),
         );
         let addend = get(item, &["Addend"]).map(|_| number(item, &["Addend"]).ok());
+        // `llvm-readelf` decodes a `SHT_ANDROID_REL` section as `Rela` entries with addend 0.
+        let addend = addend.filter(|addend| !(android_rel && *addend == Some(0)));
         findings.check(
             RELOCATIONS,
             format_args!("{what} addend"),
@@ -167,7 +174,8 @@ fn spec_name(machine: Machine, name: &str) -> &str {
         .map_or(name, |(_, _, spec)| spec)
 }
 
-/// Compare the addresses of a `SHT_RELR` section with the decoded entries of the reference.
+/// Compare the addresses of a `SHT_RELR` or `SHT_ANDROID_RELR` section with the decoded
+/// entries of the reference.
 fn relr_section(file: &ElfFile, index: usize, entries: &[Value], findings: &mut Findings) {
     let table = file
         .section_data(index)
@@ -198,11 +206,16 @@ fn relr_section(file: &ElfFile, index: usize, entries: &[Value], findings: &mut 
             actual,
         );
     }
-    // The table that `DT_RELR` names must give the same addresses. This also covers MIPS,
-    // where the reference does not show the `DT_RELR` table (see `dynamic`).
+    // The table that `DT_RELR` or `DT_ANDROID_RELR` names must give the same addresses. This
+    // also covers MIPS, where the reference does not show the `DT_RELR` table (see `dynamic`).
     let address = file.section_headers().get(index).map(|header| header.addr);
     let dynamic = file.dynamic().ok().flatten();
-    if dynamic.and_then(|table| table.get(DynamicTag::RELR)) == address {
+    let relr = dynamic.and_then(|table| {
+        table
+            .get(DynamicTag::RELR)
+            .or_else(|| table.get(DynamicTag::ANDROID_RELR))
+    });
+    if relr == address {
         match file.dynamic_relocations() {
             Ok(relocations) => findings.check(
                 DYNAMIC_RELOCATIONS,
@@ -213,6 +226,51 @@ fn relr_section(file: &ElfFile, index: usize, entries: &[Value], findings: &mut 
             Err(error) => findings.fail(DYNAMIC_RELOCATIONS, format!("{error}")),
         }
     }
+}
+
+/// Compare a `SHT_ANDROID_REL`, `SHT_ANDROID_RELA` or `SHT_CREL` section with the table that
+/// `DT_ANDROID_REL`, `DT_ANDROID_RELA` or `DT_CREL` names at the same address.
+///
+/// `llvm-readelf --dyn-relocations` does not show these tables, so the section is the
+/// reference. The section entries are compared with the reference in `table`.
+fn packed_dynamic_table(file: &ElfFile, section: &RelocationSection, findings: &mut Findings) {
+    let Some(header) = file.section_headers().get(section.index) else {
+        return;
+    };
+    let tags = match header.section_type {
+        SectionType::ANDROID_REL | SectionType::ANDROID_RELA => {
+            [DynamicTag::ANDROID_REL, DynamicTag::ANDROID_RELA]
+        }
+        SectionType::CREL => [DynamicTag::CREL, DynamicTag::CREL],
+        _ => return,
+    };
+    let Some(dynamic) = file.dynamic().ok().flatten() else {
+        return;
+    };
+    if !tags
+        .iter()
+        .any(|tag| dynamic.get(*tag) == Some(header.addr))
+    {
+        return;
+    }
+    let relocations = match file.dynamic_relocations() {
+        Ok(relocations) => relocations,
+        Err(error) => {
+            findings.fail(DYNAMIC_RELOCATIONS, format!("{error}"));
+            return;
+        }
+    };
+    let table: Option<&RelocationTable> = if header.section_type == SectionType::CREL {
+        relocations.crel.as_ref()
+    } else {
+        relocations.android.as_ref()
+    };
+    findings.check(
+        DYNAMIC_RELOCATIONS,
+        format_args!("{} table of section {}", header.section_type, section.index),
+        Some(&section.table),
+        table,
+    );
 }
 
 /// The display names of the symbol tables, by section index.

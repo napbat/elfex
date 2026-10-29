@@ -1,7 +1,7 @@
 //! The self-consistency checks: parsing, round trips, validation, accessors and the loader
 //! view.
 
-use elfex::{EhFrame, ElfFile, ElfImage, FileType, NamedSymbol, SectionType};
+use elfex::{EhFrame, ElfFile, ElfImage, FileType, LinkingView, NamedSymbol, SectionType};
 
 use crate::defects;
 use crate::report::{ACCESSORS, Findings, IMAGE, LOOKUP, PARSE, ROUND_TRIP, VALIDATE};
@@ -83,6 +83,7 @@ pub fn check_file(bytes: &[u8], findings: &mut Findings) -> Option<ElfFile> {
         check_lookup(
             &exports,
             "ElfFile",
+            file.linking(),
             |name| file.lookup_dynamic_symbol(name),
             findings,
         );
@@ -103,26 +104,62 @@ fn check_eh_frame(file: &ElfFile, findings: &mut Findings) {
     }
 }
 
-/// Check that `lookup` finds each exported name.
-fn check_lookup<F>(exports: &[NamedSymbol], what: &str, lookup: F, findings: &mut Findings)
-where
+/// The number of exports that [`check_lookup`] also looks up with the accessor. Each call of
+/// the accessor parses the tables again, so the check does not use it for each export.
+const ACCESSOR_LOOKUPS: usize = 32;
+
+/// Check that the view gives the same exports as the accessor, and that it finds each exported
+/// name. Check that the accessor `lookup` gives the same result for a sample of the names.
+fn check_lookup<F>(
+    exports: &[NamedSymbol],
+    what: &str,
+    view: elfex::Result<LinkingView<'_>>,
+    lookup: F,
+    findings: &mut Findings,
+) where
     F: Fn(&str) -> elfex::Result<Option<NamedSymbol>>,
 {
-    for symbol in exports {
-        match lookup(&symbol.name) {
+    let view = match view {
+        Ok(view) => view,
+        Err(error) => {
+            findings.fail(LOOKUP, format!("{what}::linking: {error}"));
+            return;
+        }
+    };
+    match view.exports() {
+        Ok(list) if list == exports => {}
+        Ok(_) => findings.fail(LOOKUP, format!("{what}: LinkingView::exports is different")),
+        Err(error) => findings.fail(LOOKUP, format!("{what}: LinkingView::exports: {error}")),
+    }
+    let step = (exports.len() / ACCESSOR_LOOKUPS).max(1);
+    for (index, symbol) in exports.iter().enumerate() {
+        let found = view.lookup(&symbol.name);
+        match &found {
             Ok(Some(found)) if found.name == symbol.name => {}
             Ok(found) => findings.fail(
                 LOOKUP,
                 format!(
-                    "{what}::lookup_dynamic_symbol({:?}) gives {:?}",
+                    "{what}: LinkingView::lookup({:?}) gives {:?}",
                     symbol.name,
-                    found.map(|found| found.name)
+                    found.as_ref().map(|found| &found.name)
                 ),
             ),
             Err(error) => findings.fail(
                 LOOKUP,
-                format!("{what}::lookup_dynamic_symbol({:?}): {error}", symbol.name),
+                format!("{what}: LinkingView::lookup({:?}): {error}", symbol.name),
             ),
+        }
+        if index % step == 0 {
+            let direct = lookup(&symbol.name);
+            if format!("{direct:?}") != format!("{found:?}") {
+                findings.fail(
+                    LOOKUP,
+                    format!(
+                        "{what}::lookup_dynamic_symbol({:?}) gives {direct:?}, the view {found:?}",
+                        symbol.name
+                    ),
+                );
+            }
         }
     }
 }
@@ -185,6 +222,7 @@ pub fn check_image(file: &ElfFile, bytes: &[u8], findings: &mut Findings) {
         check_lookup(
             &exports,
             "ElfImage",
+            image.linking(),
             |name| image.lookup_dynamic_symbol(name),
             findings,
         );

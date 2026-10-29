@@ -15,7 +15,8 @@ pub const ROUND_TRIP: &str = "round-trip";
 pub const VALIDATE: &str = "validate";
 /// An accessor of `ElfFile` or `ElfImage` returns an error, or `.eh_frame` does not parse.
 pub const ACCESSORS: &str = "accessors";
-/// `lookup_dynamic_symbol` does not find an exported symbol.
+/// `LinkingView` does not give the exports or does not find an exported symbol, or
+/// `lookup_dynamic_symbol` gives a different result than the view.
 pub const LOOKUP: &str = "lookup";
 /// The loader view (`ElfImage`) and its mapped image do not agree with the file.
 pub const IMAGE: &str = "image";
