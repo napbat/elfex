@@ -491,22 +491,8 @@ impl RelocationTable {
         with_addend: bool,
         entsize: usize,
     ) -> Result<Self> {
-        let structure = if with_addend { "Elf_Rela" } else { "Elf_Rel" };
-        let min = Relocation::size(encoding.class, with_addend);
-        if entsize < min {
-            return Err(Error::invalid_table(format!(
-                "relocation entry size {entsize} is smaller than {min}"
-            ))
-            .in_structure(structure));
-        }
-        if !bytes.len().is_multiple_of(entsize) {
-            return Err(Error::invalid_table(format!(
-                "relocation table size {} is not a multiple of the entry size {entsize}",
-                bytes.len()
-            ))
-            .in_structure(structure));
-        }
-        // Each chunk has at least `min` bytes, so the parse of an entry cannot fail.
+        check_table(bytes, encoding, with_addend, entsize)?;
+        // Each chunk has at least the structure size, so the parse of an entry cannot fail.
         let relocations = bytes
             .chunks_exact(entsize)
             .map(|chunk| Relocation::parse(chunk, encoding, machine, with_addend))
@@ -565,6 +551,49 @@ impl RelocationTable {
     pub fn iter(&self) -> core::slice::Iter<'_, Relocation> {
         self.relocations.iter()
     }
+}
+
+/// Check that `bytes` holds whole entries of `entsize` bytes, and that an entry holds the
+/// `Rel` or `Rela` structure.
+fn check_table(bytes: &[u8], encoding: Encoding, with_addend: bool, entsize: usize) -> Result<()> {
+    let structure = if with_addend { "Elf_Rela" } else { "Elf_Rel" };
+    let min = Relocation::size(encoding.class, with_addend);
+    if entsize < min {
+        return Err(Error::invalid_table(format!(
+            "relocation entry size {entsize} is smaller than {min}"
+        ))
+        .in_structure(structure));
+    }
+    if !bytes.len().is_multiple_of(entsize) {
+        return Err(Error::invalid_table(format!(
+            "relocation table size {} is not a multiple of the entry size {entsize}",
+            bytes.len()
+        ))
+        .in_structure(structure));
+    }
+    Ok(())
+}
+
+/// Return the largest symbol index of the entries in `bytes`, or `None` if `bytes` has no
+/// entries.
+///
+/// The function makes the checks of [`RelocationTable::parse_with_entsize`], but it does not
+/// keep the entries.
+pub(crate) fn max_relocation_symbol(
+    bytes: &[u8],
+    encoding: Encoding,
+    machine: Machine,
+    with_addend: bool,
+    entsize: usize,
+) -> Result<Option<u32>> {
+    check_table(bytes, encoding, with_addend, entsize)?;
+    let mut max = None;
+    for chunk in bytes.chunks_exact(entsize) {
+        // The chunk has at least the structure size, so the parse cannot fail.
+        let symbol = Relocation::parse(chunk, encoding, machine, with_addend)?.symbol;
+        max = max.max(Some(symbol));
+    }
+    Ok(max)
 }
 
 impl<'a> IntoIterator for &'a RelocationTable {
