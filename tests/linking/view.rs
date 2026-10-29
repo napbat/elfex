@@ -9,6 +9,7 @@ use crate::fixture::{self, ELF32, ELF64, Spec};
 /// the second time, the view uses the tables that it keeps.
 fn check_view(view: &LinkingView<'_>, accessors: &impl Linking) {
     assert_eq!(view.dynamic().cloned(), accessors.dynamic().unwrap());
+    assert!(format!("{view:?}").starts_with("LinkingView { dynamic: "));
     for _ in 0..2 {
         assert_eq!(
             view.string_table().unwrap().cloned(),
