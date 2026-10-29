@@ -19,6 +19,15 @@ const SPARE_PROGRAM_HEADERS: usize = 4;
 /// The name of the section name string table that [`ElfFile::add_section`] creates.
 const SHSTRTAB_NAME: &[u8] = b".shstrtab";
 
+/// The largest number of zero bytes that one edit adds before appended data: 256 MiB.
+///
+/// An edit pads the file to align appended data, or to move the program header table past the
+/// end of the memory image. A file with a very large `p_memsz` would need a very large padding.
+/// An edit that needs more than this limit returns
+/// [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange), and the file does not
+/// change.
+pub const MAX_APPEND_PADDING: u64 = 256 << 20;
+
 /// A section to add with [`ElfFile::add_section`].
 ///
 /// The fields give the values of the new section header (`Elf32_Shdr` or `Elf64_Shdr`). The
@@ -209,7 +218,8 @@ impl ElfFile {
     /// `PT_LOAD` segment at the end of the file, as patchelf does. The new segment has the
     /// same `p_vaddr - p_offset` as the lowest `PT_LOAD` segment, so the table is at the
     /// address that the loader expects for `e_phoff`. For this, the file grows to at least the
-    /// size of the memory image (with a large `.bss`, much larger). The new table has free
+    /// size of the memory image (with a large `.bss`, much larger). The padding before the new
+    /// table is limited to [`MAX_APPEND_PADDING`]. The new table has free
     /// entries for later segments. The method sets `e_phoff` and the `PT_PHDR` segment
     /// (offset, address and sizes) to the table.
     ///
@@ -223,7 +233,8 @@ impl ElfFile {
     ///   section header table at `e_shoff` goes past the end of the file, so that the new
     ///   bytes would change it.
     /// - Return [`ErrorKind::ValueOutOfRange`](crate::ErrorKind::ValueOutOfRange) if an
-    ///   address or offset overflows, or does not fit in 32 bits in an ELF32 file.
+    ///   address or offset overflows, does not fit in 32 bits in an ELF32 file, or needs more
+    ///   padding than [`MAX_APPEND_PADDING`].
     /// - Return a generic error if the file is too large to allocate.
     pub fn add_load_segment(&mut self, flags: u32, data: Vec<u8>, align: u64) -> Result<u64> {
         self.add_load_segment_at(flags, data, align)
@@ -406,10 +417,7 @@ impl ElfFile {
             .mapped_size()
             .ok_or_else(|| Error::invalid_segment("the end of the PT_LOAD segments overflows"))?;
         let class = self.encoding().class;
-        if usize::from(self.headers.header.phentsize) < ProgramHeader::size(class) {
-            self.headers.header.phentsize = ProgramHeader::standard_size(class);
-        }
-        let entry_size = usize::from(self.headers.header.phentsize);
+        let entry_size = usize::from(self.headers.header.phentsize).max(ProgramHeader::size(class));
         let count = self.headers.program_headers.len() + 2 + SPARE_PROGRAM_HEADERS;
         let table_size = count
             .checked_mul(entry_size)
@@ -439,6 +447,9 @@ impl ElfFile {
             ));
         }
         self.append_at(offset, vec![0; table_size])?;
+        if usize::from(self.headers.header.phentsize) < ProgramHeader::size(class) {
+            self.headers.header.phentsize = ProgramHeader::standard_size(class);
+        }
         self.insert_load(ProgramHeader {
             segment_type: SegmentType::LOAD,
             flags: PF_R,
@@ -662,6 +673,12 @@ impl ElfFile {
     /// - Return a generic error if the file is too large to allocate.
     fn append_at(&mut self, offset: u64, data: Vec<u8>) -> Result<()> {
         let too_large = || Error::generic("the file is too large to allocate");
+        let padding = offset.saturating_sub(self.file_size());
+        if padding > MAX_APPEND_PADDING {
+            return Err(Error::value_out_of_range(format!(
+                "the edit needs {padding:#x} bytes of padding, more than MAX_APPEND_PADDING"
+            )));
+        }
         let start = usize::try_from(offset).map_err(|_| too_large())?;
         let end = start.checked_add(data.len()).ok_or_else(too_large)?;
         let new_bytes = self.file_size()..u64::try_from(end).unwrap_or(u64::MAX);

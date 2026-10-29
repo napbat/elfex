@@ -67,7 +67,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-pub use edit::NewSection;
+pub use edit::{MAX_APPEND_PADDING, NewSection};
 pub use tables::{RelocationSection, SectionGroup};
 
 /// A raw ELF file that keeps all bytes.

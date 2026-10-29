@@ -198,10 +198,10 @@ fn rejects_a_program_table_move_that_does_not_fit() {
     data.size = 1 << 32;
     assert!(matches!(add(covered), ErrorKind::InvalidSegment(_)));
 
-    // The file must grow past `isize::MAX` bytes.
+    // The file must grow past `MAX_APPEND_PADDING`.
     let mut huge = elf;
     huge.program_headers_mut()[last].memsz = 1 << 63;
-    assert!(matches!(add(huge), ErrorKind::Generic(_)));
+    assert!(matches!(add(huge), ErrorKind::ValueOutOfRange(_)));
 }
 
 #[test]

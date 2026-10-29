@@ -758,3 +758,32 @@ fn builds_a_header_with_zero_table_entry_sizes() {
     let elf = ElfFile::parse(&bytes).unwrap();
     assert_eq!(elf.try_build().unwrap(), bytes);
 }
+
+#[test]
+fn refuses_an_edit_that_needs_too_much_padding() {
+    // Fuzz regression: a huge `p_memsz` made the program header table move pad the file to
+    // the end of the memory image, which allocated tens of GiB.
+    let mut elf = sample(Encoding::ELF64_LE);
+    let last = elf
+        .program_headers()
+        .iter()
+        .rposition(ProgramHeader::is_load)
+        .unwrap();
+    elf.program_headers_mut()[last].memsz = 1 << 36;
+    let before = elf.try_build().unwrap();
+    for _ in 0..8 {
+        match elf.add_load_segment(PF_R, vec![1; 16], 0) {
+            Ok(_) => {}
+            Err(error) => {
+                assert!(
+                    matches!(error.kind, ErrorKind::ValueOutOfRange(_)),
+                    "{error}"
+                );
+                break;
+            }
+        }
+    }
+    let after = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+    assert!(u64::try_from(after.len()).unwrap() < MAX_APPEND_PADDING);
+    assert!(before.len() <= after.len());
+}
