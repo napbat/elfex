@@ -127,3 +127,61 @@ fn a_funcrel_lsda_is_relative_to_pc_begin() {
     let (_, fdes) = split(EhFrame::parse_with_bases(&bytes, encoding, SECTION, &bases).unwrap());
     assert_eq!(fdes[0].lsda, Some(0x1020));
 }
+
+/// A raw value of 0 is a null pointer for every application, as in libgcc. It needs no base.
+#[test]
+fn a_raw_zero_is_a_null_pointer() {
+    let bases = PointerBases::default();
+    for encoding in ALL {
+        for pe in [
+            DW_EH_PE_ABSPTR,
+            DW_EH_PE_PCREL | DW_EH_PE_SDATA4,
+            DW_EH_PE_DATAREL | DW_EH_PE_SDATA4,
+            DW_EH_PE_TEXTREL | DW_EH_PE_UDATA4,
+            DW_EH_PE_FUNCREL | DW_EH_PE_UDATA4,
+            DW_EH_PE_INDIRECT | DW_EH_PE_PCREL | DW_EH_PE_SDATA4,
+        ] {
+            let bytes = [0; 8];
+            let mut offset = 0;
+            let value =
+                read_encoded_pointer(&bytes, &mut offset, encoding, pe, 0x1000, &bases).unwrap();
+            assert_eq!(value, Some(0), "{pe:#x}");
+            assert_ne!(offset, 0, "{pe:#x}: the offset moves past the value");
+        }
+    }
+}
+
+/// The FDE of a discarded section has a null `pc_begin`. A null LSDA pointer and a null
+/// personality pointer mean that there is no LSDA and no personality routine.
+#[test]
+fn null_pointers_in_records() {
+    let encoding = Encoding::ELF64_LE;
+    let pcrel = DW_EH_PE_PCREL | DW_EH_PE_SDATA4;
+    let mut cie = vec![1];
+    cie.extend_from_slice(b"zPLR\0");
+    cie.extend_from_slice(&[1, 0x78, 16, 7, pcrel]);
+    encoding.write_i32(&mut cie, 0);
+    cie.extend_from_slice(&[pcrel, pcrel]);
+    // The FDE of a discarded section: pc_begin and the LSDA are null.
+    let mut discarded = Vec::new();
+    encoding.write_i32(&mut discarded, 0);
+    encoding.write_i32(&mut discarded, 0x10);
+    discarded.push(4);
+    encoding.write_i32(&mut discarded, 0);
+    // A live FDE with a null LSDA: pc_begin is relative to its field.
+    let mut live = Vec::new();
+    encoding.write_i32(&mut live, 0x100);
+    encoding.write_i32(&mut live, 0x10);
+    live.push(4);
+    encoding.write_i32(&mut live, 0);
+    let bytes = records(encoding, &cie, &[&discarded, &live]);
+
+    let (cie, fdes) = split(EhFrame::parse(&bytes, encoding, SECTION).unwrap());
+    assert_eq!(cie.personality, None);
+    assert_eq!(cie.lsda_encoding, Some(pcrel));
+    assert_eq!(fdes[0].pc_begin, 0);
+    assert_eq!(fdes[0].lsda, None);
+    // The pc_begin field of the live FDE is 8 bytes after the FDE start.
+    assert_eq!(fdes[1].pc_begin, SECTION + fdes[1].offset + 8 + 0x100);
+    assert_eq!(fdes[1].lsda, None);
+}

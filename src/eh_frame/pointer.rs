@@ -241,6 +241,11 @@ pub(crate) fn read_raw(
 /// field address is a multiple of the address size, then reads a class-sized address.
 /// The arithmetic wraps to the address size of the class (32 bits for ELF32).
 ///
+/// A raw value of 0 is a null pointer: the function returns `Some(0)` and does not add the
+/// base, as libgcc does (`read_encoded_value_with_base` in `unwind-pe.h`). For example, the FDE
+/// of a discarded section has a `pc_begin` of 0. A null pointer needs no base, so the function
+/// returns no error for a missing base.
+///
 /// For `DW_EH_PE_indirect`, the function returns the address of the real pointer. elfex does
 /// not dereference it.
 ///
@@ -276,6 +281,10 @@ pub fn read_encoded_pointer(
     let start = *offset;
     let mut pos = start;
     let raw = read_raw(bytes, &mut pos, encoding, pointer_encoding & 0x0f)?;
+    if raw == 0 && is_known_application(application) {
+        *offset = pos;
+        return Ok(Some(0));
+    }
     let base = match application {
         0 => Some(0),
         DW_EH_PE_PCREL => Some(field_address),
@@ -297,4 +306,13 @@ pub fn read_encoded_pointer(
     })?;
     *offset = pos;
     Ok(Some(wrap_address(encoding, base.wrapping_add(raw))))
+}
+
+/// Return `true` for an application that [`read_encoded_pointer`] knows, except
+/// `DW_EH_PE_aligned`.
+const fn is_known_application(application: u8) -> bool {
+    matches!(
+        application,
+        0 | DW_EH_PE_PCREL | DW_EH_PE_TEXTREL | DW_EH_PE_DATAREL | DW_EH_PE_FUNCREL
+    )
 }

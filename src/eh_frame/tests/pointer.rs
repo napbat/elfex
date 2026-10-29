@@ -130,13 +130,15 @@ fn unknown_pointer_application_errors() {
     }
 }
 
+/// A relative pointer without its base is an error. A null pointer needs no base, so the test
+/// reads the value 1.
 #[test]
 fn missing_base_errors() {
     let bases = PointerBases::default();
     for application in [DW_EH_PE_TEXTREL, DW_EH_PE_DATAREL, DW_EH_PE_FUNCREL] {
         let mut offset = 0;
         let err = read_encoded_pointer(
-            &[0; 4],
+            &[1, 0, 0, 0],
             &mut offset,
             Encoding::ELF64_LE,
             application | DW_EH_PE_UDATA4,

@@ -93,7 +93,8 @@ pub struct Cie {
     /// The `DW_EH_PE_*` encoding of the FDE LSDA pointers (augmentation `L`).
     pub lsda_encoding: Option<u8>,
     /// The decoded virtual address of the personality routine (augmentation `P`). For a
-    /// `DW_EH_PE_indirect` encoding, this is the address of the pointer to the routine.
+    /// `DW_EH_PE_indirect` encoding, this is the address of the pointer to the routine. `None`
+    /// without `P` or for a null pointer: the CIE has no personality routine.
     pub personality: Option<u64>,
     /// `true` if the augmentation has `S` (a signal frame).
     pub is_signal_frame: bool,
@@ -109,10 +110,14 @@ pub struct Fde {
     /// The offset of the length field of the CIE of this FDE in the section.
     pub cie_offset: u64,
     /// The virtual address of the first instruction that the FDE covers.
+    ///
+    /// The value is 0 if the encoded pointer is null, for example in the FDE of a section that
+    /// the linker discarded. An unwinder skips such an FDE.
     pub pc_begin: u64,
     /// The number of bytes of code that the FDE covers.
     pub pc_range: u64,
-    /// The decoded virtual address of the Language-Specific Data Area, if present.
+    /// The decoded virtual address of the Language-Specific Data Area. `None` without the
+    /// augmentation `L` or for a null pointer: the FDE has no LSDA.
     pub lsda: Option<u64>,
     /// The call frame instructions, not interpreted.
     pub instructions: Vec<u8>,
@@ -449,7 +454,8 @@ fn parse_cie_augmentation(
                 let pe = read_u8(data, &mut pos)?;
                 let field = address_at(encoding, frame.section_address, pos);
                 cie.personality =
-                    read_encoded_pointer(data, &mut pos, encoding, pe, field, frame.bases)?;
+                    read_encoded_pointer(data, &mut pos, encoding, pe, field, frame.bases)?
+                        .filter(|&address| address != 0);
             }
             'S' => cie.is_signal_frame = true,
             // AArch64 pointer authentication with the B key and memory tagging have no data.
@@ -494,7 +500,8 @@ fn parse_fde(
                 lsda_encoding,
                 field,
                 &func_bases,
-            )?;
+            )?
+            .filter(|&address| address != 0);
         }
         pos = end;
     }
