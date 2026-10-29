@@ -16,6 +16,7 @@ categories = ["parsing", "development-tools", "no-std"]
 # Keep the sources, the examples, the README, the changelog and the license files.
 exclude = [
     "/.github",
+    "/bench",
     "/fuzz",
     "/scripts",
     "/tests",
