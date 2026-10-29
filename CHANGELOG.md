@@ -55,6 +55,8 @@ The first release, 0.1.0.
 - The loader action and the field width of the x86-64 and i386 relocation types
   (`RelocationKind`, `relocation_kind`, `relocation_width`, `Relocation::kind`,
   `Relocation::width`). The width of a `wordclass` field follows the class, so x32 gets 4.
+  `TlsRelocationKind` (`tls_relocation_kind`, `Relocation::tls_kind`) gives the thread-local
+  storage value that a TLS type writes.
 - Core file notes: `NT_FILE` mappings and the `NT_AUXV` auxiliary vector.
 - Mapped image helpers: the image origin, the load bias, `to_mapped_image`, and
   `to_mapped_image_at` with the relative relocations. `ElfImage::restore_dynamic_pointers`

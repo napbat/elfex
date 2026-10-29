@@ -140,3 +140,69 @@ fn other_machines_are_not_classified() {
         None
     );
 }
+
+#[test]
+fn tls_types_name_the_value_that_they_write() {
+    use TlsRelocationKind::{
+        Descriptor, ModuleId, ModuleOffset, NegatedThreadPointerOffset, ThreadPointerOffset,
+    };
+    for (machine, r_type, kind) in [
+        (Machine::X86_64, x86_64::R_X86_64_DTPMOD64, ModuleId),
+        (Machine::X86_64, x86_64::R_X86_64_DTPOFF64, ModuleOffset),
+        (Machine::X86_64, x86_64::R_X86_64_DTPOFF32, ModuleOffset),
+        (
+            Machine::X86_64,
+            x86_64::R_X86_64_TPOFF64,
+            ThreadPointerOffset,
+        ),
+        (
+            Machine::X86_64,
+            x86_64::R_X86_64_TPOFF32,
+            ThreadPointerOffset,
+        ),
+        (Machine::X86_64, x86_64::R_X86_64_TLSDESC, Descriptor),
+        (Machine::I386, i386::R_386_TLS_DTPMOD32, ModuleId),
+        (Machine::I386, i386::R_386_TLS_DTPOFF32, ModuleOffset),
+        (Machine::I386, i386::R_386_TLS_LDO_32, ModuleOffset),
+        (Machine::I386, i386::R_386_TLS_TPOFF, ThreadPointerOffset),
+        (Machine::I386, i386::R_386_TLS_LE, ThreadPointerOffset),
+        (
+            Machine::I386,
+            i386::R_386_TLS_TPOFF32,
+            NegatedThreadPointerOffset,
+        ),
+        (
+            Machine::I386,
+            i386::R_386_TLS_LE_32,
+            NegatedThreadPointerOffset,
+        ),
+        (Machine::I386, i386::R_386_TLS_DESC, Descriptor),
+    ] {
+        let relocation = Relocation::new(0x1000, 1, r_type);
+        assert_eq!(
+            relocation.tls_kind(machine),
+            Some(kind),
+            "{machine} type {r_type}"
+        );
+    }
+}
+
+#[test]
+fn other_types_write_no_tls_value() {
+    for (machine, r_type) in [
+        (Machine::X86_64, x86_64::R_X86_64_RELATIVE),
+        (Machine::X86_64, x86_64::R_X86_64_GOTTPOFF),
+        (Machine::X86_64, x86_64::R_X86_64_TLSGD),
+        (Machine::X86_64, x86_64::R_X86_64_TLSDESC_CALL),
+        (Machine::I386, i386::R_386_RELATIVE),
+        (Machine::I386, i386::R_386_TLS_IE),
+        (Machine::I386, i386::R_386_TLS_DESC_CALL),
+        (Machine::AARCH64, aarch64::R_AARCH64_TLS_DTPMOD),
+    ] {
+        assert_eq!(
+            tls_relocation_kind(machine, r_type),
+            None,
+            "{machine} type {r_type}"
+        );
+    }
+}

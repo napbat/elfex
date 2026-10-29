@@ -1,5 +1,6 @@
 //! The loader action and the field width of a relocation type: [`RelocationKind`],
-//! [`relocation_kind`] and [`relocation_width`].
+//! [`relocation_kind`], [`relocation_width`], and the thread-local storage value of a TLS type:
+//! [`TlsRelocationKind`] and [`tls_relocation_kind`].
 //!
 //! The functions know the x86-64 and the i386 relocation types. For other machines, they
 //! return [`RelocationKind::Other`] and `None`.
@@ -40,6 +41,88 @@ pub enum RelocationKind {
     IndirectRelative,
     /// Another action, or a type that this crate does not classify.
     Other,
+}
+
+/// The thread-local storage (TLS) value that a TLS relocation type writes.
+///
+/// The names follow the TLS supplement of the System V psABI ("ELF Handling For Thread-Local
+/// Storage"). The thread pointer (`tp`) is `%fs` on x86-64 and `%gs` on i386.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TlsRelocationKind {
+    /// The module ID of the object that defines the symbol, for example `R_X86_64_DTPMOD64`.
+    ModuleId,
+    /// The offset of the symbol in the TLS block of its module, for example
+    /// `R_X86_64_DTPOFF64`.
+    ModuleOffset,
+    /// The offset of the symbol from the thread pointer: the address is `tp` plus the value,
+    /// for example `R_X86_64_TPOFF64` or `R_386_TLS_TPOFF`. On x86, the value is negative.
+    ThreadPointerOffset,
+    /// The negated offset from the thread pointer: the address is `tp` minus the value, for
+    /// example `R_386_TLS_TPOFF32`.
+    NegatedThreadPointerOffset,
+    /// A TLS descriptor of two words: the resolver function and its argument, for example
+    /// `R_X86_64_TLSDESC`.
+    Descriptor,
+}
+
+/// Return the TLS value that relocation type `r_type` of `machine` writes, or `None` if the
+/// type does not write a TLS value.
+///
+/// The function knows the x86-64 and the i386 types. The types that write a value include the
+/// dynamic types and the static types of the local-exec and local-dynamic models (for example
+/// `R_X86_64_TPOFF32` and `R_386_TLS_LDO_32`). The types that refer to a global offset table
+/// entry or that mark an instruction sequence (for example `R_X86_64_GOTTPOFF` and
+/// `R_X86_64_TLSDESC_CALL`) return `None`.
+///
+/// # Examples
+///
+/// ```
+/// use elfex::Machine;
+/// use elfex::reloc::i386::R_386_TLS_TPOFF32;
+/// use elfex::reloc::x86_64::{R_X86_64_DTPMOD64, R_X86_64_RELATIVE};
+/// use elfex::reloc::{TlsRelocationKind, tls_relocation_kind};
+///
+/// assert_eq!(
+///     tls_relocation_kind(Machine::X86_64, R_X86_64_DTPMOD64),
+///     Some(TlsRelocationKind::ModuleId),
+/// );
+/// assert_eq!(
+///     tls_relocation_kind(Machine::I386, R_386_TLS_TPOFF32),
+///     Some(TlsRelocationKind::NegatedThreadPointerOffset),
+/// );
+/// assert_eq!(tls_relocation_kind(Machine::X86_64, R_X86_64_RELATIVE), None);
+/// ```
+#[must_use]
+pub const fn tls_relocation_kind(machine: Machine, r_type: u32) -> Option<TlsRelocationKind> {
+    match machine {
+        Machine::X86_64 => match r_type {
+            x86_64::R_X86_64_DTPMOD64 => Some(TlsRelocationKind::ModuleId),
+            x86_64::R_X86_64_DTPOFF64 | x86_64::R_X86_64_DTPOFF32 => {
+                Some(TlsRelocationKind::ModuleOffset)
+            }
+            x86_64::R_X86_64_TPOFF64 | x86_64::R_X86_64_TPOFF32 => {
+                Some(TlsRelocationKind::ThreadPointerOffset)
+            }
+            x86_64::R_X86_64_TLSDESC => Some(TlsRelocationKind::Descriptor),
+            _ => None,
+        },
+        Machine::I386 => match r_type {
+            i386::R_386_TLS_DTPMOD32 => Some(TlsRelocationKind::ModuleId),
+            i386::R_386_TLS_DTPOFF32 | i386::R_386_TLS_LDO_32 => {
+                Some(TlsRelocationKind::ModuleOffset)
+            }
+            i386::R_386_TLS_TPOFF | i386::R_386_TLS_LE => {
+                Some(TlsRelocationKind::ThreadPointerOffset)
+            }
+            i386::R_386_TLS_TPOFF32 | i386::R_386_TLS_LE_32 => {
+                Some(TlsRelocationKind::NegatedThreadPointerOffset)
+            }
+            i386::R_386_TLS_DESC => Some(TlsRelocationKind::Descriptor),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Return the action of relocation type `r_type` for `machine`.

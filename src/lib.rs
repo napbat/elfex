@@ -237,7 +237,7 @@ pub use program::{ProgramHeader, SegmentType};
 #[cfg(feature = "std")]
 pub use reader::FileReader;
 pub use reader::{BaseAddressReader, ReadAt, SeekReader, SliceReader, VecReader};
-pub use reloc::{Relocation, RelocationKind, RelocationTable, RelrTable};
+pub use reloc::{Relocation, RelocationKind, RelocationTable, RelrTable, TlsRelocationKind};
 pub use section::{CompressionHeader, CompressionType, SectionHeader, SectionType};
 pub use strtab::{StringTable, StringTableBuilder};
 pub use symbol::{

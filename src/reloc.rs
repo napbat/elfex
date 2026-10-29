@@ -105,7 +105,9 @@ pub use android::{
     RELOCATION_GROUPED_BY_OFFSET_DELTA_FLAG,
 };
 pub use crel::CREL_HDR_ADDEND;
-pub use kind::{RelocationKind, relocation_kind, relocation_width};
+pub use kind::{
+    RelocationKind, TlsRelocationKind, relocation_kind, relocation_width, tls_relocation_kind,
+};
 pub use relr::RelrTable;
 
 /// A relocation entry: `Elf32_Rel`, `Elf32_Rela`, `Elf64_Rel` or `Elf64_Rela`.
@@ -301,6 +303,13 @@ impl Relocation {
     #[must_use]
     pub const fn width(&self, machine: Machine, class: Class) -> Option<u8> {
         relocation_width(machine, class, self.r_type)
+    }
+
+    /// Return the TLS value that the relocation writes for `machine`, or `None` if it writes
+    /// no TLS value (see [`tls_relocation_kind`]).
+    #[must_use]
+    pub const fn tls_kind(&self, machine: Machine) -> Option<TlsRelocationKind> {
+        tls_relocation_kind(machine, self.r_type)
     }
 
     /// Return an error if the offset or the addend does not fit in the class of `encoding`.
