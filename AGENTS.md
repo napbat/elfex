@@ -31,9 +31,9 @@ item (for example `ci`, `fuzz`, `readme`).
 ## Lints: Clippy pedantic
 
 The crate denies all warnings, all Clippy `pedantic` lints, `missing_docs` and `unsafe_code`.
-The `[lints]` tables in `Cargo.toml` and `fuzz/Cargo.toml` set this.
+The `[lints]` tables in `Cargo.toml`, `fuzz/Cargo.toml` and `bench/Cargo.toml` set this.
 
-- Keep the `[lints]` tables of the two manifests the same.
+- Keep the `[lints]` tables of the three manifests the same.
 - Do not lower a lint level in a manifest or in the code.
 - Do not use `#[allow(...)]`. The manifests deny `clippy::allow_attributes`.
 - Use `#[expect(lint, reason = "...")]` only if no change to the code can remove the lint.
@@ -42,14 +42,16 @@ The `[lints]` tables in `Cargo.toml` and `fuzz/Cargo.toml` set this.
 - Do not add an item to `clippy.toml` to hide a lint. Add a word to `doc-valid-idents` only for
   a product or architecture name in prose (for example AArch64).
 - `clippy.toml` sets `avoid-breaking-exported-api = false`. Fix a lint on the public API too.
-- Do not add `unsafe` code. The one exception is `BaseAddressReader` in `src/reader.rs`. Each
-  of its unsafe items has `#[expect(unsafe_code)]` and a `// SAFETY:` comment.
+- Do not add `unsafe` code. The exceptions are `BaseAddressReader` in `src/reader.rs` and the
+  counting allocator in `bench/src/bin/memory.rs`. Each of their unsafe items has
+  `#[expect(unsafe_code)]` and a `// SAFETY:` comment.
 - Make sure that these commands complete without warnings:
 
 ```sh
 cargo clippy --all-features --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path bench/Cargo.toml --all-targets -- -D warnings
 ```
 
 ## File size: 1000 lines
@@ -124,9 +126,11 @@ Make sure that all these checks pass before you report a change as complete:
 ```sh
 cargo fmt --all -- --check
 cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+cargo fmt --manifest-path bench/Cargo.toml -- --check
 cargo clippy --all-features --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path bench/Cargo.toml --all-targets -- -D warnings
 cargo test --all-features
 cargo test --no-default-features
 cargo doc --no-deps --all-features
