@@ -12,9 +12,15 @@ The first release, 0.1.0.
 ### Added
 
 - `ElfFile`: a raw file with all bytes and lossless round trips. When nothing changes,
-  `ElfFile::try_build` returns the input bytes.
-- `ElfImage`: the loader view with the segments, from raw files, loader-mapped images and
-  remote processes (`ReadAt`). The parser can fill pages that it cannot read with zeros.
+  `ElfFile::try_build` returns the input bytes. `ElfFile<D>` is generic over the storage of the
+  bytes. `ElfFile::parse` borrows a byte slice and does not copy it, `ElfFile::from_vec` owns a
+  `Vec<u8>`, and `ElfFile::new` keeps any storage, for example a memory map. The reads and the
+  header edits work with all storage types. The edits that can make the file larger need an
+  `ElfFile<Vec<u8>>` (`ElfFile::into_owned`).
+- `ElfImage<'a>`: the loader view with the segments, from raw files, loader-mapped images and
+  remote processes (`ReadAt`). The parser can fill pages that it cannot read with zeros. The
+  segments of an image from a byte slice borrow the bytes (`Segment::data` is a `Cow`). A
+  write makes a copy of a borrowed segment. `ElfImage::into_owned` copies all segments.
 - `ElfHeaders`: the headers only, with checked address translation for raw and mapped layouts.
 - `ElfBuilder`: new executables and shared objects from sections, with the `PT_LOAD` layout,
   `PT_PHDR`, `PT_INTERP` and `PT_GNU_STACK`. `ElfBuilder::try_layout` gives the address, the
@@ -35,8 +41,14 @@ The first release, 0.1.0.
   and `crel`) and `to_mapped_image_at` use them. `RelocationTable::parse` parses a `REL` or
   `RELA` table with the standard entry size.
 - `LinkingView` (`ElfFile::linking`, `ElfImage::linking`): a reusable view of the dynamic
-  linking tables that parses each table only once. A symbol lookup with the view is a hash table
-  lookup only. The linking accessors of `ElfFile` and `ElfImage` use a new view for each call.
+  linking tables. The view parses the symbol table, the version tables and the hash tables when
+  you make it, so a symbol lookup with the view is a hash table lookup only. The view is `Send`
+  and `Sync`. The linking accessors of `ElfFile` and `ElfImage` parse only the tables that they
+  need.
+- No copies of the file data in the accessors: `StringTable<'a>` borrows its bytes, and the
+  names of a `NamedSymbol<'a>` borrow the string table (`Cow<'a, str>`, a copy only for invalid
+  UTF-8). `NamedSymbol::into_owned` copies the strings. `exports` and `imports` describe only
+  the symbols that they return.
 - Type names for relocations (`Relocation::type_name`) of x86-64, i386, `AArch64`, Arm,
   RISC-V, PowerPC, PowerPC64, S/390, MIPS, `LoongArch`, SPARC and Hexagon, and for notes
   (`Note::type_name`).
