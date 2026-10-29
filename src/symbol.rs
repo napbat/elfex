@@ -373,10 +373,11 @@ impl SymbolTable {
             .in_structure(name));
         }
         // Each chunk has at least the size of the structure, so `Symbol::parse` cannot fail.
-        let symbols = bytes
-            .chunks_exact(entry_size)
-            .map(|chunk| Symbol::parse(chunk, encoding))
-            .collect::<Result<Vec<_>>>()?;
+        let symbols = crate::collect_exact(
+            bytes
+                .chunks_exact(entry_size)
+                .map(|chunk| Symbol::parse(chunk, encoding)),
+        )?;
         Ok(Self { symbols })
     }
 
@@ -532,12 +533,13 @@ impl SymbolSectionIndexTable {
                 bytes.len()
             )));
         }
-        let indices = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|chunk| encoding.read_u32(chunk, 0))
-            .collect::<Result<Vec<_>>>()?;
+        let indices = crate::collect_exact(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| encoding.read_u32(chunk, 0)),
+        )?;
         Ok(Self { indices })
     }
 

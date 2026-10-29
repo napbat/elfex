@@ -493,10 +493,11 @@ impl RelocationTable {
     ) -> Result<Self> {
         check_table(bytes, encoding, with_addend, entsize)?;
         // Each chunk has at least the structure size, so the parse of an entry cannot fail.
-        let relocations = bytes
-            .chunks_exact(entsize)
-            .map(|chunk| Relocation::parse(chunk, encoding, machine, with_addend))
-            .collect::<Result<Vec<_>>>()?;
+        let relocations = crate::collect_exact(
+            bytes
+                .chunks_exact(entsize)
+                .map(|chunk| Relocation::parse(chunk, encoding, machine, with_addend)),
+        )?;
         Ok(Self {
             relocations,
             with_addend,

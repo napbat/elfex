@@ -92,16 +92,18 @@ impl GnuHashTable {
             )));
         };
         let buckets_start = HEADER_SIZE + bloom_len * word;
-        let bloom = (0..bloom_len)
-            .map(|index| encoding.read_addr(bytes, HEADER_SIZE + index * word))
-            .collect::<Result<Vec<_>>>()?;
-        let buckets = (0..bucket_len)
-            .map(|index| encoding.read_u32(bytes, buckets_start + index * 4))
-            .collect::<Result<Vec<_>>>()?;
+        // The checks above keep the Bloom filter and the buckets in `bytes`, and `chain_len`
+        // keeps the chains in `bytes`. Thus each capacity is not larger than the input.
+        let bloom = crate::collect_exact(
+            (0..bloom_len).map(|index| encoding.read_addr(bytes, HEADER_SIZE + index * word)),
+        )?;
+        let buckets = crate::collect_exact(
+            (0..bucket_len).map(|index| encoding.read_u32(bytes, buckets_start + index * 4)),
+        )?;
         let chain_count = chain_len(bytes, encoding, chains_start, symoffset, &buckets)?;
-        let chains = (0..chain_count)
-            .map(|index| encoding.read_u32(bytes, chains_start + index * 4))
-            .collect::<Result<Vec<_>>>()?;
+        let chains = crate::collect_exact(
+            (0..chain_count).map(|index| encoding.read_u32(bytes, chains_start + index * 4)),
+        )?;
         Ok(Self {
             class: encoding.class,
             symoffset,

@@ -108,6 +108,23 @@ pub(crate) mod prelude {
     pub use alloc::vec::Vec;
 }
 
+/// Collect the values of `items` into a list with the exact capacity, or return the first
+/// error.
+///
+/// `collect::<Result<Vec<_>>>()` does not use the length of the iterator, so the list grows
+/// and copies its values several times. Use this function for the tables of a file, which can
+/// have millions of entries. The length of `items` must come from the input bytes, so that the
+/// capacity is not larger than the input.
+pub(crate) fn collect_exact<T>(
+    items: impl ExactSizeIterator<Item = Result<T>>,
+) -> Result<prelude::Vec<T>> {
+    let mut list = prelude::Vec::with_capacity(items.len());
+    for item in items {
+        list.push(item?);
+    }
+    Ok(list)
+}
+
 /// Define a newtype for an ELF value with named constants.
 ///
 /// The newtype keeps unknown values. It implements `name()`, which returns the specification
