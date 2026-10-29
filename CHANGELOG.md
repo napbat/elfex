@@ -38,7 +38,9 @@ The first release, 0.1.0.
   the bases of the caller. `EhFrame::parse_fde_at` reads one FDE and its CIE, for example the
   FDE that `EhFrameHdr::find_fde` gives. A raw `DW_EH_PE_*` value of 0 is a null pointer, as in
   libgcc: `read_encoded_pointer` returns 0 without the base, an FDE of a discarded section has a
-  `pc_begin` of 0, and a null LSDA or personality pointer gives `None`.
+  `pc_begin` of 0, and a null LSDA or personality pointer gives `None`. `Cie` keeps the
+  encoding and the field address of the personality pointer (`personality_encoding`,
+  `personality_field`), so a caller can tell an indirect pointer from a direct one.
 - Compressed relocation formats: the Android packed format `APS2` (`SHT_ANDROID_REL`,
   `SHT_ANDROID_RELA`, `DT_ANDROID_REL`, `DT_ANDROID_RELA`) and CREL (`SHT_CREL`, `DT_CREL`).
   `RelocationTable` decodes and encodes them (`parse_android_packed`, `write_android_packed`,

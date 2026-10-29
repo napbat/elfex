@@ -185,3 +185,44 @@ fn null_pointers_in_records() {
     assert_eq!(fdes[1].pc_begin, SECTION + fdes[1].offset + 8 + 0x100);
     assert_eq!(fdes[1].lsda, None);
 }
+
+/// The CIE keeps the encoding and the field address of the personality pointer.
+#[test]
+fn the_personality_encoding_and_field() {
+    let encoding = Encoding::ELF64_LE;
+    let fde_encoding = DW_EH_PE_PCREL | DW_EH_PE_SDATA4;
+    let indirect = DW_EH_PE_INDIRECT | DW_EH_PE_PCREL | DW_EH_PE_SDATA4;
+    assert_eq!(indirect, 0x9b);
+    let mut cie = vec![1];
+    cie.extend_from_slice(b"zPR\0");
+    cie.extend_from_slice(&[1, 0x78, 16, 6, indirect]);
+    encoding.write_i32(&mut cie, 0x100);
+    cie.push(fde_encoding);
+    let bytes = records(encoding, &cie, &[]);
+    let (cie, _) = split(EhFrame::parse(&bytes, encoding, SECTION).unwrap());
+    // The length and the CIE id take 8 bytes, and the field follows 10 bytes of the body.
+    let field = SECTION + 18;
+    assert_eq!(cie.personality_encoding, Some(indirect));
+    assert_eq!(cie.personality_field, Some(field));
+    assert_eq!(cie.personality, Some(field + 0x100));
+    assert_eq!(cie.fde_pointer_encoding, fde_encoding);
+
+    // An aligned pointer starts after the padding to the next word.
+    let mut aligned = vec![1];
+    aligned.extend_from_slice(b"zPR\0");
+    // The augmentation data: the encoding, 6 bytes of padding, the word and `R`.
+    aligned.extend_from_slice(&[1, 0x78, 16, 16, DW_EH_PE_ALIGNED, 0, 0, 0, 0, 0, 0]);
+    encoding.write_u64(&mut aligned, 0x4000);
+    aligned.push(fde_encoding);
+    let bytes = records(encoding, &aligned, &[]);
+    let (cie, _) = split(EhFrame::parse(&bytes, encoding, SECTION).unwrap());
+    assert_eq!(cie.personality_field, Some(SECTION + 24));
+    assert_eq!(cie.personality, Some(0x4000));
+
+    let bytes = records(encoding, &cie_body(fde_encoding), &[]);
+    let (cie, _) = split(EhFrame::parse(&bytes, encoding, SECTION).unwrap());
+    assert_eq!(
+        (cie.personality_encoding, cie.personality_field),
+        (None, None)
+    );
+}

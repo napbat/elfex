@@ -96,6 +96,17 @@ pub struct Cie {
     /// `DW_EH_PE_indirect` encoding, this is the address of the pointer to the routine. `None`
     /// without `P` or for a null pointer: the CIE has no personality routine.
     pub personality: Option<u64>,
+    /// The `DW_EH_PE_*` encoding of the personality pointer (augmentation `P`), with the
+    /// `DW_EH_PE_indirect` bit. `None` without `P`.
+    ///
+    /// With `DW_EH_PE_indirect`, [`Self::personality`] is the address of a pointer to the
+    /// routine, not the routine.
+    pub personality_encoding: Option<u8>,
+    /// The virtual address of the encoded personality pointer in the CIE. For
+    /// `DW_EH_PE_aligned`, this is the address after the padding. `None` without `P`.
+    ///
+    /// A dynamic relocation at this address changes an absolute personality pointer.
+    pub personality_field: Option<u64>,
     /// `true` if the augmentation has `S` (a signal frame).
     pub is_signal_frame: bool,
     /// The initial call frame instructions, not interpreted.
@@ -452,10 +463,21 @@ fn parse_cie_augmentation(
             'L' => cie.lsda_encoding = Some(read_u8(data, &mut pos)?),
             'P' => {
                 let pe = read_u8(data, &mut pos)?;
-                let field = address_at(encoding, frame.section_address, pos);
+                let start = address_at(encoding, frame.section_address, pos);
                 cie.personality =
-                    read_encoded_pointer(data, &mut pos, encoding, pe, field, frame.bases)?
+                    read_encoded_pointer(data, &mut pos, encoding, pe, start, frame.bases)?
                         .filter(|&address| address != 0);
+                cie.personality_encoding = Some(pe);
+                cie.personality_field = Some(if pe & 0x70 == DW_EH_PE_ALIGNED {
+                    // The aligned value is one class-sized word at the end of the field.
+                    address_at(
+                        encoding,
+                        frame.section_address,
+                        pos.saturating_sub(encoding.addr_size()),
+                    )
+                } else {
+                    start
+                });
             }
             'S' => cie.is_signal_frame = true,
             // AArch64 pointer authentication with the B key and memory tagging have no data.
