@@ -136,15 +136,11 @@ impl RelocationTable {
         }
         let shift = mask.trailing_zeros();
         let flag_bits: u32 = if self.with_addend { 3 } else { 2 };
-        let header = u64::try_from(self.relocations.len())
-            .ok()
-            .and_then(|count| count.checked_mul(8))
-            .ok_or_else(|| {
-                Error::value_out_of_range("the relocation count is too large")
-                    .in_structure(STRUCTURE)
-            })?
-            | if self.with_addend { CREL_HDR_ADDEND } else { 0 }
-            | u64::from(shift);
+        // A `Vec` holds at most `isize::MAX` bytes, and an entry has 32 bytes, so the count
+        // shifted left by 3 fits in 64 bits.
+        let count = u64::try_from(self.relocations.len()).unwrap_or(u64::MAX);
+        let header =
+            (count << 3) | if self.with_addend { CREL_HDR_ADDEND } else { 0 } | u64::from(shift);
         let mut out = Vec::with_capacity(self.relocations.len().saturating_add(10));
         write_uleb128(&mut out, header);
         let mut previous = Relocation::default();

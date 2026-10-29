@@ -248,36 +248,26 @@ impl RelocationTable {
             previous = relocation.offset;
         }
         let mut out = ANDROID_PACKED_MAGIC.to_vec();
-        write_sleb128(&mut out, count_i64(entries.len())?);
+        write_sleb128(&mut out, count_i64(entries.len()));
         write_sleb128(&mut out, 0);
         let mut addend = 0_i64;
         let mut start = 0;
-        while start < entries.len() {
+        while let Some(first) = entries.get(start).copied() {
             let repeats = |index: usize| entries.get(index + 1) == entries.get(index);
-            let end = if repeats(start) {
+            start = if repeats(start) {
                 let end = (start..entries.len())
                     .find(|index| !repeats(*index))
                     .map_or(entries.len(), |index| index + 1);
-                write_shared_group(
-                    &mut out,
-                    &entries[start..end],
-                    self.with_addend,
-                    &mut addend,
-                )?;
+                write_shared_group(&mut out, first, end - start, self.with_addend, &mut addend);
                 end
             } else {
                 let end = (start..entries.len())
                     .find(|index| repeats(*index))
                     .unwrap_or(entries.len());
-                write_plain_group(
-                    &mut out,
-                    &entries[start..end],
-                    self.with_addend,
-                    &mut addend,
-                )?;
+                let group = entries.get(start..end).unwrap_or_default();
+                write_plain_group(&mut out, group, self.with_addend, &mut addend);
                 end
             };
-            start = end;
         }
         Ok(out)
     }
@@ -294,22 +284,21 @@ struct Entry {
     addend: i64,
 }
 
-/// Append a group of equal entries that shares the offset delta, `r_info` and the addend.
+/// Append a group of `count` entries that are equal to `first`. The group shares the offset
+/// delta, `r_info` and the addend.
 fn write_shared_group(
     out: &mut Vec<u8>,
-    entries: &[Entry],
+    first: Entry,
+    count: usize,
     with_addend: bool,
     addend: &mut i64,
-) -> Result<()> {
-    let Some(first) = entries.first() else {
-        return Ok(());
-    };
+) {
     let has_addend = with_addend && first.addend != 0;
     let mut flags = RELOCATION_GROUPED_BY_INFO_FLAG | RELOCATION_GROUPED_BY_OFFSET_DELTA_FLAG;
     if has_addend {
         flags |= RELOCATION_GROUPED_BY_ADDEND_FLAG | RELOCATION_GROUP_HAS_ADDEND_FLAG;
     }
-    write_sleb128(out, count_i64(entries.len())?);
+    write_sleb128(out, count_i64(count));
     write_sleb128(out, flags.cast_signed());
     write_sleb128(out, first.delta.cast_signed());
     write_sleb128(out, first.info.cast_signed());
@@ -319,24 +308,18 @@ fn write_shared_group(
     } else {
         *addend = 0;
     }
-    Ok(())
 }
 
 /// Append a group that shares no value: each entry gives its offset delta, its `r_info` and,
 /// if an addend is not 0, its addend delta.
-fn write_plain_group(
-    out: &mut Vec<u8>,
-    entries: &[Entry],
-    with_addend: bool,
-    addend: &mut i64,
-) -> Result<()> {
+fn write_plain_group(out: &mut Vec<u8>, entries: &[Entry], with_addend: bool, addend: &mut i64) {
     let has_addend = with_addend && entries.iter().any(|entry| entry.addend != 0);
     let flags = if has_addend {
         RELOCATION_GROUP_HAS_ADDEND_FLAG
     } else {
         0
     };
-    write_sleb128(out, count_i64(entries.len())?);
+    write_sleb128(out, count_i64(entries.len()));
     write_sleb128(out, flags.cast_signed());
     if !has_addend {
         *addend = 0;
@@ -349,15 +332,13 @@ fn write_plain_group(
             *addend = entry.addend;
         }
     }
-    Ok(())
 }
 
 /// Convert an entry count to the signed value of the stream.
-fn count_i64(count: usize) -> Result<i64> {
-    i64::try_from(count).map_err(|_| {
-        Error::value_out_of_range(format!("the relocation count {count} is too large"))
-            .in_structure("APS2")
-    })
+///
+/// A `Vec` holds at most `isize::MAX` bytes, so a count of entries always fits in `i64`.
+fn count_i64(count: usize) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
 }
 
 /// Convert a stream position to a `u64` offset for the error context.
