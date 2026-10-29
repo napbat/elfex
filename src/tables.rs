@@ -21,7 +21,7 @@ pub use crate::group::GroupTable;
 pub use crate::hash::{GnuHashTable, SysvHashTable};
 pub use crate::linking::{DynamicRelocations, LinkingView, VersionTables};
 pub use crate::note::{AuxvEntry, FileMapping, GnuAbiTag, GnuProperty, Note, NoteTable};
-pub use crate::reloc::{Relocation, RelocationTable, RelrTable};
+pub use crate::reloc::{Relocation, RelocationKind, RelocationTable, RelrTable};
 pub use crate::strtab::{StringTable, StringTableBuilder};
 pub use crate::symbol::{
     BuiltSymbolTable, NamedSymbol, NewSymbol, Symbol, SymbolBinding, SymbolSectionIndexTable,

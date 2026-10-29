@@ -301,7 +301,9 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `to_image()` | The `ElfImage` of the file as it is now, with all edits |
 
 `Relocation::type_name(machine)` gives the spec name of a relocation type, for example
-`R_X86_64_RELATIVE`. `Note::type_name()` gives the spec name of a note type for its owner,
+`R_X86_64_RELATIVE`. For x86-64 and i386, `Relocation::kind(machine)` gives the loader action
+(`RelocationKind`), and `Relocation::width(machine, class)` gives the number of bytes that the
+relocation changes. `Note::type_name()` gives the spec name of a note type for its owner,
 for example `NT_GNU_BUILD_ID`.
 
 Each accessor parses the tables that it needs again. The accessors do not copy the file data:

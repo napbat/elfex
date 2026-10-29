@@ -3,6 +3,7 @@ use crate::ErrorKind;
 
 mod android;
 mod crel;
+mod kind;
 
 #[test]
 fn parse_selects_the_standard_entry_size() {

@@ -15,7 +15,8 @@
 //! The relocation type values are processor-specific. The submodules ([`x86_64`], [`i386`],
 //! [`aarch64`], [`arm`], [`riscv`], [`ppc`], [`ppc64`], [`s390`], [`mips`], [`loongarch`],
 //! [`sparc`], [`hexagon`]) hold the `R_*` constants. Use [`relocation_type_name`] to get the
-//! spec name of a type.
+//! spec name of a type. Use [`relocation_kind`] and [`relocation_width`] to get the loader
+//! action and the field width of an x86-64 or i386 type.
 //!
 //! # Examples
 //!
@@ -84,6 +85,7 @@ pub mod arm;
 mod crel;
 pub mod hexagon;
 pub mod i386;
+mod kind;
 pub mod loongarch;
 pub mod mips;
 pub mod ppc;
@@ -103,6 +105,7 @@ pub use android::{
     RELOCATION_GROUPED_BY_OFFSET_DELTA_FLAG,
 };
 pub use crel::CREL_HDR_ADDEND;
+pub use kind::{RelocationKind, relocation_kind, relocation_width};
 pub use relr::RelrTable;
 
 /// A relocation entry: `Elf32_Rel`, `Elf32_Rela`, `Elf64_Rel` or `Elf64_Rela`.
@@ -285,6 +288,19 @@ impl Relocation {
             self.r_type
         };
         relocation_type_name(machine, r_type)
+    }
+
+    /// Return the action of the relocation type for `machine` (see [`relocation_kind`]).
+    #[must_use]
+    pub const fn kind(&self, machine: Machine) -> RelocationKind {
+        relocation_kind(machine, self.r_type)
+    }
+
+    /// Return the number of bytes that the relocation changes at [`offset`](Self::offset),
+    /// or `None` if the type has no fixed width (see [`relocation_width`]).
+    #[must_use]
+    pub const fn width(&self, machine: Machine, class: Class) -> Option<u8> {
+        relocation_width(machine, class, self.r_type)
     }
 
     /// Return an error if the offset or the addend does not fit in the class of `encoding`.

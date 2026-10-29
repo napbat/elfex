@@ -52,6 +52,9 @@ The first release, 0.1.0.
 - Type names for relocations (`Relocation::type_name`) of x86-64, i386, `AArch64`, Arm,
   RISC-V, PowerPC, PowerPC64, S/390, MIPS, `LoongArch`, SPARC and Hexagon, and for notes
   (`Note::type_name`).
+- The loader action and the field width of the x86-64 and i386 relocation types
+  (`RelocationKind`, `relocation_kind`, `relocation_width`, `Relocation::kind`,
+  `Relocation::width`). The width of a `wordclass` field follows the class, so x32 gets 4.
 - Core file notes: `NT_FILE` mappings and the `NT_AUXV` auxiliary vector.
 - Mapped image helpers: the image origin, the load bias, `to_mapped_image`, and
   `to_mapped_image_at` with the relative relocations. `ElfImage::restore_dynamic_pointers`
