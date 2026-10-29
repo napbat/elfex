@@ -282,7 +282,7 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `version_tables()` | The `versym`, `verdef` and `verneed` tables |
 | `sysv_hash_table()`, `gnu_hash_table()` | The `DT_HASH` and `DT_GNU_HASH` tables |
 | `dynamic_relocations()` | The `RELA`, `REL`, PLT, `RELR`, Android packed (`DT_ANDROID_REL`, `DT_ANDROID_RELA`) and CREL (`DT_CREL`) relocation tables |
-| `linking()` | A `LinkingView` that parses each of these tables only once |
+| `linking()` | A `LinkingView` that keeps the parsed symbol, version and hash tables |
 | `notes()`, `build_id()` | The notes, and the `NT_GNU_BUILD_ID` descriptor |
 | `core_file_mappings()`, `auxv()` | The `NT_FILE` mapped files and the `NT_AUXV` auxiliary vector of a core file |
 | `init_array()`, `fini_array()`, `preinit_array()` | The initialization and termination functions |
@@ -304,10 +304,12 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 `R_X86_64_RELATIVE`. `Note::type_name()` gives the spec name of a note type for its owner,
 for example `NT_GNU_BUILD_ID`.
 
-Each accessor parses the tables that it needs again. To call many accessors, or to look up
-many symbols, use `linking()`. The `LinkingView` parses each table at the first call that needs
-it and keeps it, so each `lookup(name)` is a hash table lookup only. It gives the same results
-as the accessors.
+Each accessor parses the tables that it needs again. The accessors do not copy the file data:
+the string tables and the symbol names (`NamedSymbol<'a>`) borrow the bytes of the file. To call
+many accessors, or to look up many symbols, use `linking()`. The `LinkingView` parses the symbol
+table, the version tables and the hash tables one time and keeps them, so each `lookup(name)` is
+a hash table lookup only. It gives the same results as the accessors. Threads can share the
+view: it is `Send` and `Sync`.
 
 ```rust,no_run
 use elfex::ElfFile;
