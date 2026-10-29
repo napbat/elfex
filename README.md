@@ -277,7 +277,8 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `exports()`, `imports()`, `lookup_dynamic_symbol(name)` | The defined and the undefined dynamic symbols, and a hash table lookup |
 | `version_tables()` | The `versym`, `verdef` and `verneed` tables |
 | `sysv_hash_table()`, `gnu_hash_table()` | The `DT_HASH` and `DT_GNU_HASH` tables |
-| `dynamic_relocations()` | The `RELA`, `REL`, PLT and `RELR` relocation tables |
+| `dynamic_relocations()` | The `RELA`, `REL`, PLT, `RELR`, Android packed (`DT_ANDROID_REL`, `DT_ANDROID_RELA`) and CREL (`DT_CREL`) relocation tables |
+| `linking()` | A `LinkingView` that parses each of these tables only once |
 | `notes()`, `build_id()` | The notes, and the `NT_GNU_BUILD_ID` descriptor |
 | `core_file_mappings()`, `auxv()` | The `NT_FILE` mapped files and the `NT_AUXV` auxiliary vector of a core file |
 | `init_array()`, `fini_array()`, `preinit_array()` | The initialization and termination functions |
@@ -290,7 +291,7 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 | `symbols()`, `symbol_strings()` | The static symbol table (`SHT_SYMTAB`) and its string table |
 | `symbol_list()` | The static symbols with names and sections (`NamedSymbol`). `SHT_SYMTAB_SHNDX` gives the extended section indices |
 | `lookup_symbol(name)` | A static symbol, or else a dynamic symbol, with the name |
-| `section_relocations(index)`, `relocation_sections()` | One `SHT_REL` or `SHT_RELA` section, or all of them with their target sections (`RelocationSection`) |
+| `section_relocations(index)`, `relocation_sections()` | One relocation section (`SHT_REL`, `SHT_RELA`, `SHT_CREL`, `SHT_ANDROID_REL` or `SHT_ANDROID_RELA`), or all of them with their target sections (`RelocationSection`) |
 | `section_groups()` | The `SHT_GROUP` sections with their flags, signatures and members (`SectionGroup`). `GroupTable` parses and writes the data of one group |
 | `section_data_by_name(name)` | The bytes of the first section with the name |
 | `to_image()` | The `ElfImage` of the file as it is now, with all edits |
@@ -298,6 +299,11 @@ reads the tables that the dynamic table names. `ElfFile` uses the sections (for 
 `Relocation::type_name(machine)` gives the spec name of a relocation type, for example
 `R_X86_64_RELATIVE`. `Note::type_name()` gives the spec name of a note type for its owner,
 for example `NT_GNU_BUILD_ID`.
+
+Each accessor parses the tables that it needs again. To call many accessors, or to look up
+many symbols, use `linking()`. The `LinkingView` parses each table at the first call that needs
+it and keeps it, so each `lookup(name)` is a hash table lookup only. It gives the same results
+as the accessors.
 
 ```rust,no_run
 use elfex::ElfFile;
@@ -330,15 +336,25 @@ for section in file.relocation_sections()? {
 for group in file.section_groups()? {
     println!("group {:?} with {} members", group.signature, group.members.len());
 }
+let view = file.linking()?;
+for name in ["malloc", "free"] {
+    if let Some(symbol) = view.lookup(name)? {
+        println!("{name} is symbol {} at {:#x}", symbol.index, symbol.symbol.value);
+    }
+}
 # Ok::<(), elfex::Error>(())
 ```
 
 Each table type also parses from bytes and serializes to bytes. For example,
-`SymbolTable::parse(bytes, encoding)` parses the contiguous bytes of a symbol table. The table
-modules (`dynamic`, `symbol`, `strtab`, `reloc`, `note`, `hash`, `version`, `group` and
-`eh_frame`) also hold the constants of each area, and the builders (`SymbolTableBuilder`,
-`StringTableBuilder`, `SysvHashTable::try_build` and `GnuHashTable::try_build`). Each `build`
-function panics on invalid input. Use the matching `try_build` function to get a `Result`.
+`SymbolTable::parse(bytes, encoding)` parses the contiguous bytes of a symbol table, and
+`RelocationTable::parse(bytes, encoding, machine, with_addend)` parses a `REL` or `RELA`
+table. `RelocationTable` also decodes and encodes the compressed formats:
+`parse_android_packed` and `write_android_packed` for the Android `APS2` format, and
+`parse_crel` and `write_crel` for CREL. The table modules (`dynamic`, `symbol`, `strtab`,
+`reloc`, `note`, `hash`, `version`, `group` and `eh_frame`) also hold the constants of each
+area, and the builders (`SymbolTableBuilder`, `StringTableBuilder`, `SysvHashTable::try_build`
+and `GnuHashTable::try_build`). Each `build` function panics on invalid input. Use the
+matching `try_build` function to get a `Result`.
 
 `ElfHeaders::validate(file_size)` checks only the headers, without the file data. Use it after
 `ElfHeaders::from_slice` or `ElfHeaders::read_from`.
@@ -500,12 +516,16 @@ file, it checks these items:
 
 - The parse, the lossless round trip and the validation.
 - The headers, sections, segments, dynamic table, symbols, relocations, notes, versions and
-  section groups, against the JSON and text output of `llvm-readelf`.
-- All accessors of `ElfFile` and `ElfImage`, the `.eh_frame` parser, the symbol lookup and the
-  mapped image.
+  section groups, against the JSON and text output of `llvm-readelf`. This includes the
+  Android packed (`SHT_ANDROID_REL`, `SHT_ANDROID_RELA`) and CREL (`SHT_CREL`) relocation
+  sections.
+- All accessors of `ElfFile` and `ElfImage`, the `.eh_frame` parser, the symbol lookup of
+  `LinkingView` and the accessors, and the mapped image.
 
 Make a corpus with `scripts/build-corpus.sh` (it needs clang and ld.lld), then run the test on
-Linux or WSL. Add the system directories that you want to check:
+Linux or WSL. The script also makes Android shared objects with packed relocations
+(`ld.lld --pack-dyn-relocs=android`) and objects with CREL relocations
+(`clang -Wa,--crel`). Add the system directories that you want to check:
 
 ```bash
 scripts/build-corpus.sh ~/elfex-corpus
