@@ -28,6 +28,15 @@ The first release, 0.1.0.
   and GNU hash tables, GNU symbol versions, section groups (`GroupTable`), `REL`, `RELA` and
   `RELR` relocations, and `.eh_frame` and `.eh_frame_hdr`. Each table builder has a `try_build`
   function that returns a `Result`, and a `build` function that panics on invalid input.
+- Compressed relocation formats: the Android packed format `APS2` (`SHT_ANDROID_REL`,
+  `SHT_ANDROID_RELA`, `DT_ANDROID_REL`, `DT_ANDROID_RELA`) and CREL (`SHT_CREL`, `DT_CREL`).
+  `RelocationTable` decodes and encodes them (`parse_android_packed`, `write_android_packed`,
+  `parse_crel`, `write_crel`). `relocation_sections`, `dynamic_relocations` (fields `android`
+  and `crel`) and `to_mapped_image_at` use them. `RelocationTable::parse` parses a `REL` or
+  `RELA` table with the standard entry size.
+- `LinkingView` (`ElfFile::linking`, `ElfImage::linking`): a reusable view of the dynamic
+  linking tables that parses each table only once. A symbol lookup with the view is a hash table
+  lookup only. The linking accessors of `ElfFile` and `ElfImage` use a new view for each call.
 - Type names for relocations (`Relocation::type_name`) of x86-64, i386, `AArch64`, Arm,
   RISC-V, PowerPC, PowerPC64, S/390, MIPS, `LoongArch`, SPARC and Hexagon, and for notes
   (`Note::type_name`).
