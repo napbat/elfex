@@ -103,6 +103,8 @@ elf_value_type! {
     SYMTAB_SHNDX = 18, "SHT_SYMTAB_SHNDX";
     /// `SHT_RELR`: relative relocations in the compact RELR format.
     RELR = 19, "SHT_RELR";
+    /// `SHT_CREL`: relocations in the compact CREL format.
+    CREL = 0x4000_0014, "SHT_CREL";
     /// `SHT_ANDROID_REL`: Android packed relocations without addends.
     ANDROID_REL = 0x6000_0001, "SHT_ANDROID_REL";
     /// `SHT_ANDROID_RELA`: Android packed relocations with addends.
@@ -113,6 +115,8 @@ elf_value_type! {
     LLVM_LINKER_OPTIONS = 0x6fff_4c01, "SHT_LLVM_LINKER_OPTIONS";
     /// `SHT_LLVM_ADDRSIG`: the LLVM address-significance table.
     LLVM_ADDRSIG = 0x6fff_4c03, "SHT_LLVM_ADDRSIG";
+    /// `SHT_ANDROID_RELR`: relative relocations in the RELR format, with the Android type.
+    ANDROID_RELR = 0x6fff_ff00, "SHT_ANDROID_RELR";
     /// `SHT_GNU_ATTRIBUTES`: GNU object attributes.
     GNU_ATTRIBUTES = 0x6fff_fff5, "SHT_GNU_ATTRIBUTES";
     /// `SHT_GNU_HASH`: the GNU symbol hash table.
@@ -152,6 +156,18 @@ impl SectionType {
     pub const RISCV_ATTRIBUTES: Self = Self(0x7000_0003);
     /// `SHT_MIPS_ABIFLAGS`: MIPS ABI flags (`EM_MIPS` only).
     pub const MIPS_ABIFLAGS: Self = Self(0x7000_002a);
+
+    /// Return `true` for a section of relocation entries with a symbol and a type:
+    /// `SHT_REL`, `SHT_RELA`, `SHT_CREL`, `SHT_ANDROID_REL` or `SHT_ANDROID_RELA`.
+    ///
+    /// `SHT_RELR` gives only relative relocations, so the function returns `false` for it.
+    #[must_use]
+    pub fn is_relocation(self) -> bool {
+        matches!(
+            self,
+            Self::REL | Self::RELA | Self::CREL | Self::ANDROID_REL | Self::ANDROID_RELA
+        )
+    }
 }
 
 /// The size of `Elf32_Shdr` in bytes.
