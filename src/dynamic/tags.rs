@@ -83,6 +83,8 @@ elf_value_type! {
     RELR = 36, "DT_RELR";
     /// `DT_RELRENT`: size in bytes of one `DT_RELR` entry.
     RELRENT = 37, "DT_RELRENT";
+    /// `DT_CREL`: virtual address of the CREL relocations.
+    CREL = 0x4000_0026, "DT_CREL";
     /// `DT_ANDROID_REL`: virtual address of the Android packed `REL` relocations.
     ANDROID_REL = 0x6000_000f, "DT_ANDROID_REL";
     /// `DT_ANDROID_RELSZ`: size in bytes of `DT_ANDROID_REL`.
@@ -236,6 +238,7 @@ impl DynamicTag {
             | Self::PREINIT_ARRAY
             | Self::SYMTAB_SHNDX
             | Self::RELR
+            | Self::CREL
             | Self::GNU_HASH
             | Self::VERSYM
             | Self::VERDEF
