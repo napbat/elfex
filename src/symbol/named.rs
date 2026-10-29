@@ -4,7 +4,7 @@ use super::{Symbol, SymbolSectionIndexTable};
 use crate::prelude::*;
 use crate::section::SHN_UNDEF;
 use crate::strtab::StringTable;
-use crate::version::{VersionMap, VersymTable, is_hidden};
+use crate::version::{VersionMap, VersymTable, is_hidden, version_index};
 use crate::{Error, Result};
 
 /// A symbol of a static or a dynamic symbol table, with its name, its section and its
@@ -98,9 +98,33 @@ pub(crate) struct SymbolNames<'a, 't> {
     pub(crate) map: Option<&'t VersionMap>,
 }
 
+/// The version strings of a symbol: the version name and the file name.
+type VersionStrings<'a> = (Option<Cow<'a, str>>, Option<Cow<'a, str>>);
+
+/// The version strings of the last version index that [`SymbolNames::describe_with`] read.
+///
+/// Most symbols of a table have the same version as the symbol before them, so the cache
+/// reads the strings of a version only one time for each run of symbols.
+#[derive(Default)]
+struct VersionCache<'a> {
+    /// The version index (`Elf_Versym` without `VERSYM_HIDDEN`) and its strings.
+    last: Option<(u16, VersionStrings<'a>)>,
+}
+
 impl<'a> SymbolNames<'a, '_> {
     /// Make the [`NamedSymbol`] of the symbol at `index`.
     pub(crate) fn describe(&self, index: usize, symbol: Symbol) -> Result<NamedSymbol<'a>> {
+        self.describe_with(index, symbol, &mut VersionCache::default())
+    }
+
+    /// Make the [`NamedSymbol`] of the symbol at `index`. `cache` keeps the version strings of
+    /// the last symbol.
+    fn describe_with(
+        &self,
+        index: usize,
+        symbol: Symbol,
+        cache: &mut VersionCache<'a>,
+    ) -> Result<NamedSymbol<'a>> {
         let index_u32 = u32::try_from(index).map_err(|_| {
             Error::invalid_table(format!("the symbol index {index} does not fit in 32 bits"))
         })?;
@@ -110,17 +134,8 @@ impl<'a> SymbolNames<'a, '_> {
             table_string(self.strings, symbol.name, self.structure)?
         };
         let raw = self.versym.and_then(|versym| versym.get(index));
-        let version = raw
-            .zip(self.map)
-            .and_then(|(raw, map)| map.symbol_version(raw));
-        let (version, version_file) = match version {
-            Some(version) => (
-                Some(table_string(self.strings, version.name, self.structure)?),
-                version
-                    .file
-                    .map(|file| table_string(self.strings, file, self.structure))
-                    .transpose()?,
-            ),
+        let (version, version_file) = match raw {
+            Some(raw) => self.version_strings(raw, cache)?,
             None => (None, None),
         };
         let section_index = if symbol.shndx == SHN_UNDEF {
@@ -141,6 +156,32 @@ impl<'a> SymbolNames<'a, '_> {
         })
     }
 
+    /// Return the version strings of the `Elf_Versym` value `raw`.
+    fn version_strings(
+        &self,
+        raw: u16,
+        cache: &mut VersionCache<'a>,
+    ) -> Result<VersionStrings<'a>> {
+        let key = version_index(raw);
+        if let Some((last, strings)) = &cache.last
+            && *last == key
+        {
+            return Ok(strings.clone());
+        }
+        let strings = match self.map.and_then(|map| map.symbol_version(raw)) {
+            Some(version) => (
+                Some(table_string(self.strings, version.name, self.structure)?),
+                version
+                    .file
+                    .map(|file| table_string(self.strings, file, self.structure))
+                    .transpose()?,
+            ),
+            None => (None, None),
+        };
+        cache.last = Some((key, strings.clone()));
+        Ok(strings)
+    }
+
     /// Make the [`NamedSymbol`] of each symbol of `symbols` after index 0 that `keep`
     /// accepts, in table order.
     pub(crate) fn describe_all(
@@ -157,8 +198,9 @@ impl<'a> SymbolNames<'a, '_> {
         };
         // Count the symbols first, so that the list does not grow and copy its items.
         let mut list = Vec::with_capacity(kept().count());
+        let mut cache = VersionCache::default();
         for (index, symbol) in kept() {
-            list.push(self.describe(index, *symbol)?);
+            list.push(self.describe_with(index, *symbol, &mut cache)?);
         }
         Ok(list)
     }
