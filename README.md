@@ -495,7 +495,13 @@ The hooks run rustfmt and Clippy on all targets of the crate. They do this with 
 and with `no_std + alloc`. They also lint the separate fuzz package.
 
 CI runs the same checks. CI also runs the tests and rustdoc with both feature sets, and Clippy
-and the tests for the 32-bit `i686-pc-windows-msvc` target.
+and the tests for the 32-bit `i686-pc-windows-msvc` target. On Linux, CI also does these
+tasks:
+
+- It runs the tests on big-endian hosts (`s390x` and 32-bit `powerpc`) through qemu.
+- It runs the corpus compatibility test and the edit-and-run test (see below).
+- It runs each fuzz target for one minute.
+- It measures the line coverage, and fails below 97%.
 
 Each package manifest denies warnings, the Clippy pedantic group, missing docs and unsafe code.
 The only unsafe code is `BaseAddressReader`. Direct Cargo commands thus apply the same policy.
@@ -507,7 +513,11 @@ The fuzz targets are in `fuzz/`. Run them with `cargo-fuzz` on Linux, macOS or W
 cargo +nightly fuzz run fuzz-elf-headers
 cargo +nightly fuzz run fuzz-elf-image
 cargo +nightly fuzz run fuzz-elf-file
+cargo +nightly fuzz run fuzz-elf-edit
 ```
+
+`fuzz-elf-edit` applies a sequence of `ElfFile` edits to the input. It checks that each edited
+file parses again and that its round trip is lossless.
 
 ### Compatibility tests with real files
 
