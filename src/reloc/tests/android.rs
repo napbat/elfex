@@ -187,7 +187,8 @@ fn android_packed_count_has_a_budget() {
     assert_eq!(table.relocations[4095].offset, 4096 * 8);
 
     let huge = shared(1 << 40);
-    assert!(1 << 40 > huge.len() * ANDROID_PACKED_MAX_ENTRIES_PER_BYTE);
+    let budget = u64::try_from(huge.len() * ANDROID_PACKED_MAX_ENTRIES_PER_BYTE).unwrap();
+    assert!(1_u64 << 40 > budget);
     let error =
         RelocationTable::parse_android_packed(&huge, Encoding::ELF64_LE, Machine::X86_64, false)
             .unwrap_err();
