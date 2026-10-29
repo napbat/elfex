@@ -40,7 +40,9 @@ The first release, 0.1.0.
   libgcc: `read_encoded_pointer` returns 0 without the base, an FDE of a discarded section has a
   `pc_begin` of 0, and a null LSDA or personality pointer gives `None`. `Cie` keeps the
   encoding and the field address of the personality pointer (`personality_encoding`,
-  `personality_field`), so a caller can tell an indirect pointer from a direct one.
+  `personality_field`), so a caller can tell an indirect pointer from a direct one. The
+  `eh_frame` module holds the call frame instruction opcodes (`DW_CFA_*`, DWARF 5 and GNU) and
+  the masks of the primary opcodes.
 - Compressed relocation formats: the Android packed format `APS2` (`SHT_ANDROID_REL`,
   `SHT_ANDROID_RELA`, `DT_ANDROID_REL`, `DT_ANDROID_RELA`) and CREL (`SHT_CREL`, `DT_CREL`).
   `RelocationTable` decodes and encodes them (`parse_android_packed`, `write_android_packed`,

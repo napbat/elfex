@@ -6,7 +6,9 @@
 //! `.eh_frame_hdr` section that the `PT_GNU_EH_FRAME` segment maps.
 //!
 //! The module also decodes `DW_EH_PE_*` pointers ([`read_encoded_pointer`]), and reads and
-//! writes LEB128 values ([`read_uleb128`], [`write_uleb128`]).
+//! writes LEB128 values ([`read_uleb128`], [`write_uleb128`]). It holds the call frame
+//! instruction opcodes (`DW_CFA_*`, for example [`DW_CFA_DEF_CFA`]) for a caller that decodes
+//! the instructions.
 //!
 //! # Examples
 //!
@@ -49,11 +51,22 @@
 //! # Ok::<(), elfex::Error>(())
 //! ```
 
+mod cfa;
 mod hdr;
 mod pointer;
 #[cfg(test)]
 mod tests;
 
+pub use cfa::{
+    DW_CFA_ADVANCE_LOC, DW_CFA_ADVANCE_LOC1, DW_CFA_ADVANCE_LOC2, DW_CFA_ADVANCE_LOC4,
+    DW_CFA_DEF_CFA, DW_CFA_DEF_CFA_EXPRESSION, DW_CFA_DEF_CFA_OFFSET, DW_CFA_DEF_CFA_OFFSET_SF,
+    DW_CFA_DEF_CFA_REGISTER, DW_CFA_DEF_CFA_SF, DW_CFA_EXPRESSION, DW_CFA_GNU_ARGS_SIZE,
+    DW_CFA_GNU_NEGATIVE_OFFSET_EXTENDED, DW_CFA_HIGH_MASK, DW_CFA_LOW_MASK, DW_CFA_NOP,
+    DW_CFA_OFFSET, DW_CFA_OFFSET_EXTENDED, DW_CFA_OFFSET_EXTENDED_SF, DW_CFA_REGISTER,
+    DW_CFA_REMEMBER_STATE, DW_CFA_RESTORE, DW_CFA_RESTORE_EXTENDED, DW_CFA_RESTORE_STATE,
+    DW_CFA_SAME_VALUE, DW_CFA_SET_LOC, DW_CFA_UNDEFINED, DW_CFA_VAL_EXPRESSION, DW_CFA_VAL_OFFSET,
+    DW_CFA_VAL_OFFSET_SF,
+};
 pub use hdr::{EhFrameHdr, EhFrameHdrEntry};
 pub use pointer::{
     DW_EH_PE_ABSPTR, DW_EH_PE_ALIGNED, DW_EH_PE_DATAREL, DW_EH_PE_FUNCREL, DW_EH_PE_INDIRECT,
