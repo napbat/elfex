@@ -210,6 +210,38 @@ impl Error {
         &self.kind
     }
 
+    /// Return a copy of the error. An I/O error becomes a generic error with the same text,
+    /// because an I/O error cannot be copied.
+    #[must_use]
+    pub(crate) fn duplicate(&self) -> Self {
+        let kind = match &self.kind {
+            ErrorKind::Io(error) => ErrorKind::Generic(format!("I/O error: {error}")),
+            ErrorKind::InvalidMagic => ErrorKind::InvalidMagic,
+            ErrorKind::InvalidClass(class) => ErrorKind::InvalidClass(*class),
+            ErrorKind::InvalidDataEncoding(data) => ErrorKind::InvalidDataEncoding(*data),
+            ErrorKind::BufferTooSmall { expected, actual } => ErrorKind::BufferTooSmall {
+                expected: *expected,
+                actual: *actual,
+            },
+            ErrorKind::InvalidHeader(message) => ErrorKind::InvalidHeader(message.clone()),
+            ErrorKind::InvalidSegment(message) => ErrorKind::InvalidSegment(message.clone()),
+            ErrorKind::InvalidSection(message) => ErrorKind::InvalidSection(message.clone()),
+            ErrorKind::InvalidTable(message) => ErrorKind::InvalidTable(message.clone()),
+            ErrorKind::OffsetOutOfBounds { offset, size } => ErrorKind::OffsetOutOfBounds {
+                offset: *offset,
+                size: *size,
+            },
+            ErrorKind::InvalidAddress(address) => ErrorKind::InvalidAddress(*address),
+            ErrorKind::ValueOutOfRange(message) => ErrorKind::ValueOutOfRange(message.clone()),
+            ErrorKind::InvalidUtf8 => ErrorKind::InvalidUtf8,
+            ErrorKind::Generic(message) => ErrorKind::Generic(message.clone()),
+        };
+        Self {
+            kind,
+            context: self.context.clone(),
+        }
+    }
+
     /// Create an `InvalidMagic` error.
     #[must_use]
     pub fn invalid_magic() -> Self {
@@ -410,10 +442,17 @@ mod tests {
             (ErrorKind::Generic("custom".into()), "custom"),
         ];
         for (kind, value) in cases {
-            let text = Error::from(kind).to_string();
+            let error = Error::from(kind).at_offset(5);
+            let text = error.to_string();
             assert!(text.contains(value), "{text} does not contain {value}");
+            let copy = error.duplicate();
+            assert_eq!(copy.to_string(), text);
+            assert_eq!(copy.context, error.context);
         }
         assert!(Error::invalid_magic().to_string().contains("\\x7fELF"));
+        for error in [Error::invalid_magic(), Error::invalid_utf8()] {
+            assert_eq!(error.duplicate().to_string(), error.to_string());
+        }
     }
 
     #[test]
@@ -423,5 +462,9 @@ mod tests {
         assert!(error.source().is_some());
         assert!(error.to_string().starts_with("I/O error: "));
         assert!(Error::invalid_address(0).source().is_none());
+        // An I/O error cannot be copied, so the copy is a generic error with the same text.
+        let copy = error.duplicate();
+        assert!(matches!(copy.kind(), ErrorKind::Generic(_)));
+        assert_eq!(copy.to_string(), error.to_string());
     }
 }
