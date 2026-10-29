@@ -65,7 +65,7 @@ const NOTE_TYPES: &[(&str, u32)] = &[
 ];
 
 /// Compare the notes, the section groups and the version tables.
-pub fn compare(file: &ElfFile, reference: &Reference, findings: &mut Findings) {
+pub fn compare(file: &ElfFile<&[u8]>, reference: &Reference, findings: &mut Findings) {
     notes(file, &reference.json, findings);
     groups(file, &reference.text.groups, findings);
     versions(
@@ -98,7 +98,7 @@ fn hex_string(bytes: &[u8]) -> String {
 }
 
 /// Compare the notes of all note sections, or of all note segments.
-fn notes(file: &ElfFile, json: &Value, findings: &mut Findings) {
+fn notes(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     let notes = match file.notes() {
         Ok(notes) => notes,
         Err(error) => {
@@ -158,7 +158,7 @@ fn notes(file: &ElfFile, json: &Value, findings: &mut Findings) {
 
 /// Compare the `NT_FILE` mappings of a core file. The reference gives the file offset in
 /// pages, and elfex in bytes.
-fn file_mappings(file: &ElfFile, item: &Value, findings: &mut Findings) {
+fn file_mappings(file: &ElfFile<&[u8]>, item: &Value, findings: &mut Findings) {
     let (page_size, mappings) = match file.core_file_mappings() {
         Ok(Some(found)) => found,
         Ok(None) => {
@@ -204,7 +204,7 @@ fn file_mappings(file: &ElfFile, item: &Value, findings: &mut Findings) {
 }
 
 /// Compare the section groups.
-fn groups(file: &ElfFile, expected: &[Group], findings: &mut Findings) {
+fn groups(file: &ElfFile<&[u8]>, expected: &[Group], findings: &mut Findings) {
     let groups = match file.section_groups() {
         Ok(groups) => groups,
         Err(error) => {
@@ -226,16 +226,13 @@ fn groups(file: &ElfFile, expected: &[Group], findings: &mut Findings) {
 
 /// Compare the version definitions and the version requirements.
 fn versions(
-    file: &ElfFile,
+    file: &ElfFile<&[u8]>,
     definitions: &[Definition],
     requirements: &[Requirement],
     findings: &mut Findings,
 ) {
     let (tables, strings) = match (file.version_tables(), file.dynamic_strings()) {
-        (Ok(tables), Ok(strings)) => (
-            tables,
-            strings.unwrap_or_else(|| StringTable::new(Vec::new())),
-        ),
+        (Ok(tables), Ok(strings)) => (tables, strings.unwrap_or_else(|| StringTable::parse(&[]))),
         (Err(error), _) | (_, Err(error)) => {
             findings.fail(VERSIONS, format!("version_tables: {error}"));
             return;

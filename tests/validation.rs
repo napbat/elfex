@@ -275,7 +275,7 @@ fn reports_a_bad_section_link() {
 
 /// Return an upper limit of the size of the raw file that `ElfImage::try_build` makes, or
 /// `None` if an end overflows.
-fn dump_size(image: &ElfImage) -> Option<u64> {
+fn dump_size(image: &ElfImage<'_>) -> Option<u64> {
     let count = u64::try_from(image.segments.len()).ok()?;
     let table_size = count.checked_mul(u64::from(image.header.phentsize.max(56)))?;
     let table_end = image.header.phoff.checked_add(table_size)?;

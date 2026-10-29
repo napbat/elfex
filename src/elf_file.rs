@@ -8,6 +8,10 @@
 //! - Add a `PT_LOAD` segment ([`ElfFile::add_load_segment`]).
 //! - Change the program interpreter ([`ElfFile::set_interpreter`]).
 //!
+//! [`ElfFile::parse`] borrows the bytes, so it does not copy them. The edits in the list can
+//! make the file larger, so they need an owned file: use [`ElfFile::from_vec`] or
+//! [`ElfFile::into_owned`].
+//!
 //! The edits change the data buffer and the headers. [`ElfFile::try_build`] serializes the
 //! headers into a copy of the data buffer. When nothing changes, the build returns the input
 //! bytes. [`ElfFile::to_image`] gives the loader view ([`ElfImage`](crate::ElfImage)) of
@@ -34,13 +38,14 @@
 //!     .try_build()?
 //!     .try_build()?;
 //!
-//! let mut file = ElfFile::parse(&bytes)?;
+//! let mut file = ElfFile::from_vec(bytes)?;
 //! let comment = file.section_by_name(".comment").expect("the file has .comment").index;
 //! file.set_section_data(comment, b"elfex\0".to_vec())?;
 //! file.add_section(NewSection::new(".elfex", SectionType::PROGBITS, vec![1, 2, 3]))?;
 //! file.set_entry_point(0x40_1000);
 //!
-//! let edited = ElfFile::parse(&file.try_build()?)?;
+//! let edited_bytes = file.try_build()?;
+//! let edited = ElfFile::parse(&edited_bytes)?;
 //! assert_eq!(edited.section_data_by_name(".comment")?, Some(&b"elfex\0"[..]));
 //! assert_eq!(edited.section_data_by_name(".elfex")?, Some(&[1, 2, 3][..]));
 //! assert_eq!(edited.entry_point(), 0x40_1000);
@@ -73,10 +78,18 @@ pub use tables::{RelocationSection, SectionGroup};
 
 /// A raw ELF file that keeps all bytes.
 ///
-/// The type owns the file bytes and the parsed headers. The header accessors give the headers
-/// as they are now, with all edits. [`Self::as_bytes`] gives the data buffer, which holds the
-/// headers as of the last parse. [`Self::try_build`] writes the current headers into a copy
-/// of the buffer.
+/// The type keeps the file bytes in a storage `D` and the parsed headers. The storage can be
+/// a borrowed slice ([`ElfFile::parse`]), an owned `Vec<u8>` ([`ElfFile::from_vec`]) or any
+/// other type that gives the bytes, for example a memory map ([`Self::new`]). The parse does
+/// not copy the bytes.
+///
+/// The methods that read the file work with all storage types. The methods that change bytes
+/// in place need a storage that gives mutable bytes. The methods that can make the file
+/// larger need an `ElfFile<Vec<u8>>`. Use [`Self::into_owned`] to get an owned copy.
+///
+/// The header accessors give the headers as they are now, with all edits. [`Self::as_bytes`]
+/// gives the data buffer, which holds the headers as of the last parse. [`Self::try_build`]
+/// writes the current headers into a copy of the buffer.
 ///
 /// The round trip is lossless: for each input that parses, `ElfFile::parse(bytes)?.try_build()?`
 /// is equal to `bytes`.
@@ -107,11 +120,19 @@ pub use tables::{RelocationSection, SectionGroup};
 /// assert_eq!(file.try_build()?, bytes);
 /// # Ok::<(), elfex::Error>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ElfFile {
-    data: Vec<u8>,
+#[derive(Debug, Clone)]
+pub struct ElfFile<D = Vec<u8>> {
+    data: D,
     headers: ElfHeaders,
 }
+
+impl<D: AsRef<[u8]>, E: AsRef<[u8]>> PartialEq<ElfFile<E>> for ElfFile<D> {
+    fn eq(&self, other: &ElfFile<E>) -> bool {
+        self.headers == other.headers && self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl<D: AsRef<[u8]>> Eq for ElfFile<D> {}
 
 /// A section of an [`ElfFile`]: its index, name, header and file bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,24 +152,26 @@ pub struct SectionRef<'a> {
     pub data: &'a [u8],
 }
 
-impl ElfFile {
-    /// Parse a raw ELF file from a byte slice. The method copies the bytes.
+impl<'a> ElfFile<&'a [u8]> {
+    /// Parse a raw ELF file in a byte slice. The file borrows the bytes and does not copy
+    /// them.
     ///
     /// # Errors
     ///
     /// Return an error from [`ElfHeaders::read_from`] if the headers do not parse.
-    pub fn parse(data: &[u8]) -> Result<Self> {
-        Self::from_vec(data.to_vec())
+    pub fn parse(data: &'a [u8]) -> Result<Self> {
+        Self::new(data)
     }
+}
 
+impl ElfFile<Vec<u8>> {
     /// Parse a raw ELF file and keep `data` as the data buffer.
     ///
     /// # Errors
     ///
     /// Return an error from [`ElfHeaders::read_from`] if the headers do not parse.
     pub fn from_vec(data: Vec<u8>) -> Result<Self> {
-        let headers = ElfHeaders::read_from(&SliceReader::new(&data), 0, SourceLayout::File)?;
-        Ok(Self { data, headers })
+        Self::new(data)
     }
 
     /// Read and parse a raw ELF file from a [`ReadAt`] source.
@@ -193,6 +216,43 @@ impl ElfFile {
         let mut data = Vec::new();
         stream.read_to_end(&mut data)?;
         Self::from_vec(data)
+    }
+}
+
+impl<D: AsRef<[u8]>> ElfFile<D> {
+    /// Parse a raw ELF file and keep `data` as the storage of the bytes.
+    ///
+    /// The method does not copy the bytes. Use it for a storage type other than a slice or a
+    /// `Vec<u8>`, for example a memory map.
+    ///
+    /// # Errors
+    ///
+    /// Return an error from [`ElfHeaders::read_from`] if the headers do not parse.
+    pub fn new(data: D) -> Result<Self> {
+        let headers =
+            ElfHeaders::read_from(&SliceReader::new(data.as_ref()), 0, SourceLayout::File)?;
+        Ok(Self { data, headers })
+    }
+
+    /// Return the storage of the bytes and drop the headers.
+    ///
+    /// The storage holds the headers as of the last parse. Use [`Self::try_build`] to get the
+    /// file with the current headers.
+    #[must_use]
+    pub fn into_inner(self) -> D {
+        self.data
+    }
+
+    /// Return a file that owns a copy of the bytes, with the same headers and edits.
+    ///
+    /// Use the result for the edits that can make the file larger, for example
+    /// [`ElfFile::add_section`].
+    #[must_use]
+    pub fn into_owned(self) -> ElfFile<Vec<u8>> {
+        ElfFile {
+            data: self.data.as_ref().to_vec(),
+            headers: self.headers,
+        }
     }
 
     /// Return the parsed headers, with all edits.
@@ -291,25 +351,20 @@ impl ElfFile {
     /// current headers.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Return the data buffer for an edit. The length of the buffer cannot change.
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data
+        self.data.as_ref()
     }
 
     /// Return the length of the data buffer in bytes.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.as_bytes().len()
     }
 
     /// Return `true` if the data buffer is empty. A parsed file always has a header, so the
     /// result is `false`.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.as_bytes().is_empty()
     }
 
     /// Return the section at `index`, or `None` if the index is out of range.
@@ -324,7 +379,7 @@ impl ElfFile {
                 .get(index)
                 .map_or("", String::as_str),
             header,
-            data: self.section_bytes(header).unwrap_or(&[]),
+            data: self.space().section_bytes(header).unwrap_or(&[]),
         })
     }
 
@@ -358,25 +413,7 @@ impl ElfFile {
     /// - Return [`ErrorKind::OffsetOutOfBounds`](crate::ErrorKind::OffsetOutOfBounds) if the
     ///   file range of the section is outside the file.
     pub fn section_data(&self, index: usize) -> Result<&[u8]> {
-        let header = self.section_header(index)?;
-        self.section_bytes(header)
-            .map_err(|error| error.in_structure("section data"))
-    }
-
-    /// Return the file bytes of the section at `index` for an edit.
-    ///
-    /// # Errors
-    ///
-    /// Return an error for the same conditions as [`Self::section_data`].
-    pub fn section_data_mut(&mut self, index: usize) -> Result<&mut [u8]> {
-        let header = *self.section_header(index)?;
-        if !header.has_file_data() {
-            return Ok(&mut []);
-        }
-        let range = self
-            .data_range(header.offset, header.size)
-            .map_err(|error| error.in_structure("section data"))?;
-        Ok(&mut self.data[range])
+        self.space().section_data(index)
     }
 
     /// Return the file bytes of the segment of program header `index`: `p_filesz` bytes at
@@ -389,13 +426,7 @@ impl ElfFile {
     /// - Return [`ErrorKind::OffsetOutOfBounds`](crate::ErrorKind::OffsetOutOfBounds) if the
     ///   file range of the segment is outside the file.
     pub fn segment_data(&self, index: usize) -> Result<&[u8]> {
-        let header = self.headers.program_headers.get(index).ok_or_else(|| {
-            Error::invalid_segment(format!("program header index {index} is out of range"))
-        })?;
-        let range = self
-            .data_range(header.offset, header.filesz)
-            .map_err(|error| error.in_structure("segment data"))?;
-        Ok(&self.data[range])
+        self.space().segment_data(index)
     }
 
     /// Return `len` bytes at file offset `offset`.
@@ -405,19 +436,9 @@ impl ElfFile {
     /// Return [`ErrorKind::OffsetOutOfBounds`](crate::ErrorKind::OffsetOutOfBounds) if the
     /// range is outside the file.
     pub fn bytes_at(&self, offset: u64, len: usize) -> Result<&[u8]> {
-        let range = self.data_range(offset, u64::try_from(len).unwrap_or(u64::MAX))?;
-        Ok(&self.data[range])
-    }
-
-    /// Return `len` bytes at file offset `offset` for an edit.
-    ///
-    /// # Errors
-    ///
-    /// Return [`ErrorKind::OffsetOutOfBounds`](crate::ErrorKind::OffsetOutOfBounds) if the
-    /// range is outside the file.
-    pub fn bytes_at_mut(&mut self, offset: u64, len: usize) -> Result<&mut [u8]> {
-        let range = self.data_range(offset, u64::try_from(len).unwrap_or(u64::MAX))?;
-        Ok(&mut self.data[range])
+        let space = self.space();
+        let range = space.data_range(offset, u64::try_from(len).unwrap_or(u64::MAX))?;
+        Ok(&space.data[range])
     }
 
     /// Return `len` file bytes at virtual address `vaddr`.
@@ -432,8 +453,9 @@ impl ElfFile {
     /// - Return [`ErrorKind::OffsetOutOfBounds`](crate::ErrorKind::OffsetOutOfBounds) if the
     ///   segment goes past the end of the file.
     pub fn read_vaddr(&self, vaddr: u64, len: usize) -> Result<&[u8]> {
-        let range = self.vaddr_range(vaddr, len)?;
-        Ok(&self.data[range])
+        let space = self.space();
+        let range = space.vaddr_range(vaddr, len)?;
+        Ok(&space.data[range])
     }
 
     /// Return the file bytes from virtual address `vaddr` to the end of the file bytes of its
@@ -446,25 +468,7 @@ impl ElfFile {
     /// Return [`ErrorKind::InvalidAddress`](crate::ErrorKind::InvalidAddress) if no `PT_LOAD`
     /// segment has file bytes at `vaddr`, or if the address is past the end of the file.
     pub fn slice_from_vaddr(&self, vaddr: u64) -> Result<&[u8]> {
-        let (offset, available) = self.vaddr_location(vaddr)?;
-        let start = usize::try_from(offset)
-            .ok()
-            .filter(|start| *start < self.data.len())
-            .ok_or_else(|| Error::invalid_address(vaddr))?;
-        let rest = &self.data[start..];
-        let len = usize::try_from(available).map_or(rest.len(), |len| len.min(rest.len()));
-        Ok(&rest[..len])
-    }
-
-    /// Write `bytes` at virtual address `vaddr`.
-    ///
-    /// # Errors
-    ///
-    /// Return an error for the same conditions as [`Self::read_vaddr`].
-    pub fn write_vaddr(&mut self, vaddr: u64, bytes: &[u8]) -> Result<()> {
-        let range = self.vaddr_range(vaddr, bytes.len())?;
-        self.data[range].copy_from_slice(bytes);
-        Ok(())
+        self.space().slice_from_vaddr(vaddr)
     }
 
     /// Check the headers against the file and return all issues.
@@ -473,12 +477,17 @@ impl ElfFile {
         self.headers.validate(Some(self.file_size()))
     }
 
+    /// Return the borrowed view of the bytes and the headers.
+    pub(crate) fn space(&self) -> FileSpace<'_> {
+        FileSpace {
+            data: self.as_bytes(),
+            headers: &self.headers,
+        }
+    }
+
     /// Return the section header at `index`, or an `InvalidSection` error.
     fn section_header(&self, index: usize) -> Result<&SectionHeader> {
-        self.headers
-            .section_headers
-            .get(index)
-            .ok_or_else(|| Error::invalid_section(format!("section index {index} is out of range")))
+        section_header(&self.headers, index)
     }
 
     /// Return the section header at `index` for an edit, or an `InvalidSection` error.
@@ -489,57 +498,19 @@ impl ElfFile {
             .ok_or_else(|| Error::invalid_section(format!("section index {index} is out of range")))
     }
 
-    /// Return the file bytes of a section, or an empty slice if it has no file bytes.
-    fn section_bytes(&self, header: &SectionHeader) -> Result<&[u8]> {
-        if !header.has_file_data() {
-            return Ok(&[]);
-        }
-        let range = self.data_range(header.offset, header.size)?;
-        Ok(&self.data[range])
-    }
-
     /// Return the length of the data buffer as `u64`.
     fn file_size(&self) -> u64 {
-        u64::try_from(self.data.len()).unwrap_or(u64::MAX)
+        self.space().file_size()
+    }
+
+    /// Return the file bytes of a section, or an empty slice if it has no file bytes.
+    fn section_bytes(&self, header: &SectionHeader) -> Result<&[u8]> {
+        self.space().section_bytes(header)
     }
 
     /// Convert a file range to an index range in the data buffer.
     fn data_range(&self, offset: u64, len: u64) -> Result<Range<usize>> {
-        let out_of_bounds = || Error::offset_out_of_bounds(offset, self.file_size());
-        let end = offset.checked_add(len).ok_or_else(out_of_bounds)?;
-        let start = usize::try_from(offset).map_err(|_| out_of_bounds())?;
-        let end = usize::try_from(end).map_err(|_| out_of_bounds())?;
-        if end > self.data.len() {
-            return Err(out_of_bounds());
-        }
-        Ok(start..end)
-    }
-
-    /// Find the `PT_LOAD` segment with file bytes at `vaddr`. Return the file offset of
-    /// `vaddr` and the number of segment file bytes from `vaddr` to the end of the segment.
-    fn vaddr_location(&self, vaddr: u64) -> Result<(u64, u64)> {
-        self.headers
-            .load_segments()
-            .find_map(|segment| {
-                let delta = vaddr.checked_sub(segment.vaddr)?;
-                if delta >= segment.filesz {
-                    return None;
-                }
-                Some((segment.offset.checked_add(delta)?, segment.filesz - delta))
-            })
-            .ok_or_else(|| Error::invalid_address(vaddr))
-    }
-
-    /// Convert a virtual address range in the file bytes of one `PT_LOAD` segment to an index
-    /// range in the data buffer.
-    fn vaddr_range(&self, vaddr: u64, len: usize) -> Result<Range<usize>> {
-        let (offset, available) = self.vaddr_location(vaddr)?;
-        let len = u64::try_from(len).unwrap_or(u64::MAX);
-        if len > available {
-            return Err(Error::invalid_address(vaddr));
-        }
-        self.data_range(offset, len)
-            .map_err(|error| error.at_address(vaddr))
+        self.space().data_range(offset, len)
     }
 
     /// Return the index of the section name string table, resolved as the parser does: an
@@ -659,6 +630,163 @@ impl ElfFile {
             ])
             .any(|used| overlaps(&used, range))
     }
+}
+
+impl<D: AsRef<[u8]> + AsMut<[u8]>> ElfFile<D> {
+    /// Return the data buffer for an edit. The length of the buffer cannot change.
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        self.data.as_mut()
+    }
+
+    /// Return the file bytes of the section at `index` for an edit.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::section_data`].
+    pub fn section_data_mut(&mut self, index: usize) -> Result<&mut [u8]> {
+        let header = *self.section_header(index)?;
+        if !header.has_file_data() {
+            return Ok(&mut []);
+        }
+        let range = self
+            .data_range(header.offset, header.size)
+            .map_err(|error| error.in_structure("section data"))?;
+        Ok(&mut self.data.as_mut()[range])
+    }
+
+    /// Return `len` bytes at file offset `offset` for an edit.
+    ///
+    /// # Errors
+    ///
+    /// Return [`ErrorKind::OffsetOutOfBounds`](crate::ErrorKind::OffsetOutOfBounds) if the
+    /// range is outside the file.
+    pub fn bytes_at_mut(&mut self, offset: u64, len: usize) -> Result<&mut [u8]> {
+        let range = self.data_range(offset, u64::try_from(len).unwrap_or(u64::MAX))?;
+        Ok(&mut self.data.as_mut()[range])
+    }
+
+    /// Write `bytes` at virtual address `vaddr`.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for the same conditions as [`Self::read_vaddr`].
+    pub fn write_vaddr(&mut self, vaddr: u64, bytes: &[u8]) -> Result<()> {
+        let range = self.space().vaddr_range(vaddr, bytes.len())?;
+        self.data.as_mut()[range].copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
+/// A borrowed view of the bytes and the headers of an [`ElfFile`].
+///
+/// The view does not depend on the storage type of the file. The linking accessors keep it,
+/// so a [`LinkingView`](crate::LinkingView) is `Send` and `Sync` for all storage types.
+#[derive(Clone, Copy)]
+pub(crate) struct FileSpace<'a> {
+    /// The file bytes.
+    data: &'a [u8],
+    /// The parsed headers.
+    headers: &'a ElfHeaders,
+}
+
+impl<'a> FileSpace<'a> {
+    /// Return the parsed headers.
+    pub(crate) const fn headers(&self) -> &'a ElfHeaders {
+        self.headers
+    }
+
+    /// Return the length of the bytes as `u64`.
+    fn file_size(&self) -> u64 {
+        u64::try_from(self.data.len()).unwrap_or(u64::MAX)
+    }
+
+    /// Convert a file range to an index range in the bytes.
+    fn data_range(&self, offset: u64, len: u64) -> Result<Range<usize>> {
+        let out_of_bounds = || Error::offset_out_of_bounds(offset, self.file_size());
+        let end = offset.checked_add(len).ok_or_else(out_of_bounds)?;
+        let start = usize::try_from(offset).map_err(|_| out_of_bounds())?;
+        let end = usize::try_from(end).map_err(|_| out_of_bounds())?;
+        if end > self.data.len() {
+            return Err(out_of_bounds());
+        }
+        Ok(start..end)
+    }
+
+    /// Return the file bytes of a section, or an empty slice if it has no file bytes.
+    fn section_bytes(&self, header: &SectionHeader) -> Result<&'a [u8]> {
+        if !header.has_file_data() {
+            return Ok(&[]);
+        }
+        let range = self.data_range(header.offset, header.size)?;
+        Ok(&self.data[range])
+    }
+
+    /// Return the file bytes of the section at `index` (see [`ElfFile::section_data`]).
+    pub(crate) fn section_data(&self, index: usize) -> Result<&'a [u8]> {
+        let header = section_header(self.headers, index)?;
+        self.section_bytes(header)
+            .map_err(|error| error.in_structure("section data"))
+    }
+
+    /// Return the file bytes of the segment of program header `index` (see
+    /// [`ElfFile::segment_data`]).
+    pub(crate) fn segment_data(&self, index: usize) -> Result<&'a [u8]> {
+        let header = self.headers.program_headers.get(index).ok_or_else(|| {
+            Error::invalid_segment(format!("program header index {index} is out of range"))
+        })?;
+        let range = self
+            .data_range(header.offset, header.filesz)
+            .map_err(|error| error.in_structure("segment data"))?;
+        Ok(&self.data[range])
+    }
+
+    /// Return the file bytes from `vaddr` to the end of its segment (see
+    /// [`ElfFile::slice_from_vaddr`]).
+    pub(crate) fn slice_from_vaddr(&self, vaddr: u64) -> Result<&'a [u8]> {
+        let (offset, available) = self.vaddr_location(vaddr)?;
+        let start = usize::try_from(offset)
+            .ok()
+            .filter(|start| *start < self.data.len())
+            .ok_or_else(|| Error::invalid_address(vaddr))?;
+        let rest = &self.data[start..];
+        let len = usize::try_from(available).map_or(rest.len(), |len| len.min(rest.len()));
+        Ok(&rest[..len])
+    }
+
+    /// Find the `PT_LOAD` segment with file bytes at `vaddr`. Return the file offset of
+    /// `vaddr` and the number of segment file bytes from `vaddr` to the end of the segment.
+    fn vaddr_location(&self, vaddr: u64) -> Result<(u64, u64)> {
+        self.headers
+            .load_segments()
+            .find_map(|segment| {
+                let delta = vaddr.checked_sub(segment.vaddr)?;
+                if delta >= segment.filesz {
+                    return None;
+                }
+                Some((segment.offset.checked_add(delta)?, segment.filesz - delta))
+            })
+            .ok_or_else(|| Error::invalid_address(vaddr))
+    }
+
+    /// Convert a virtual address range in the file bytes of one `PT_LOAD` segment to an index
+    /// range in the bytes.
+    fn vaddr_range(&self, vaddr: u64, len: usize) -> Result<Range<usize>> {
+        let (offset, available) = self.vaddr_location(vaddr)?;
+        let len = u64::try_from(len).unwrap_or(u64::MAX);
+        if len > available {
+            return Err(Error::invalid_address(vaddr));
+        }
+        self.data_range(offset, len)
+            .map_err(|error| error.at_address(vaddr))
+    }
+}
+
+/// Return the section header at `index` of `headers`, or an `InvalidSection` error.
+fn section_header(headers: &ElfHeaders, index: usize) -> Result<&SectionHeader> {
+    headers
+        .section_headers
+        .get(index)
+        .ok_or_else(|| Error::invalid_section(format!("section index {index} is out of range")))
 }
 
 /// Return the file range of a header table with `count` entries of `entry_size` bytes at

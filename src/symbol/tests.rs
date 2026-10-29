@@ -314,7 +314,7 @@ fn builder_orders_locals_first_and_shares_names() {
         assert_eq!(built.strings, b"\0a.c\0main\0data\0");
 
         let table = SymbolTable::parse(&built.symbols, encoding).unwrap();
-        let strings = StringTable::new(built.strings.clone());
+        let strings = StringTable::parse(&built.strings);
         assert_eq!(table.len(), 5);
         assert_eq!(table.symbols[0], Symbol::default());
         assert_eq!(table.first_non_local(), 3);
@@ -396,7 +396,7 @@ fn parse_short_symbol_errors() {
     }
 }
 
-fn names(strings: Option<&StringTable>) -> SymbolNames<'_> {
+fn names(strings: Option<StringTable<'_>>) -> SymbolNames<'_, 'static> {
     SymbolNames {
         strings,
         structure: "DT_STRTAB",
@@ -431,7 +431,7 @@ fn describe_bad_name_offset_errors() {
         name: 7,
         ..sample_symbol()
     };
-    let err = names(Some(&strings)).describe(1, symbol).unwrap_err();
+    let err = names(Some(strings)).describe(1, symbol).unwrap_err();
     assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
     let context = err.context().unwrap();
     assert_eq!(context.structure.as_deref(), Some("DT_STRTAB"));
@@ -444,7 +444,7 @@ fn describe_bad_name_offset_errors() {
 fn describe_index_after_u32_errors() {
     let strings = StringTable::parse(b"\0a\0");
     if let Ok(index) = usize::try_from(u64::from(u32::MAX) + 1) {
-        let err = names(Some(&strings))
+        let err = names(Some(strings))
             .describe(index, sample_symbol())
             .unwrap_err();
         assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));

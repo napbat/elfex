@@ -113,20 +113,20 @@ pub struct SectionGroup {
 }
 
 /// A symbol table section with its string table and its extended section indices.
-struct LinkedSymbols {
+struct LinkedSymbols<'a> {
     /// The symbols.
     symbols: SymbolTable,
     /// The string table that `sh_link` gives.
-    strings: StringTable,
+    strings: StringTable<'a>,
     /// The `SHT_SYMTAB_SHNDX` section that links to the symbol table.
     indices: Option<SymbolSectionIndexTable>,
 }
 
-impl LinkedSymbols {
+impl<'a> LinkedSymbols<'a> {
     /// Return the tables that make a [`NamedSymbol`].
-    fn names(&self) -> SymbolNames<'_> {
+    fn names(&self) -> SymbolNames<'a, '_> {
         SymbolNames {
-            strings: Some(&self.strings),
+            strings: Some(self.strings),
             structure: SYMTAB_STRINGS,
             indices: self.indices.as_ref(),
             versym: None,
@@ -135,7 +135,7 @@ impl LinkedSymbols {
     }
 }
 
-impl ElfFile {
+impl<D: AsRef<[u8]>> ElfFile<D> {
     /// Return the first `SHT_SYMTAB` section as a symbol table.
     ///
     /// # Errors
@@ -154,7 +154,7 @@ impl ElfFile {
     ///
     /// Return an error if `sh_link` is not a section index, or if the section is outside the
     /// file.
-    pub fn symbol_strings(&self) -> Result<Option<StringTable>> {
+    pub fn symbol_strings(&self) -> Result<Option<StringTable<'_>>> {
         let Some(index) = self.file_section_index(SectionType::SYMTAB) else {
             return Ok(None);
         };
@@ -173,19 +173,14 @@ impl ElfFile {
     /// Return an error if the symbol table, its string table or its extended section index
     /// table is outside the file or does not parse, or if a name offset is outside the
     /// string table.
-    pub fn symbol_list(&self) -> Result<Vec<NamedSymbol>> {
+    pub fn symbol_list(&self) -> Result<Vec<NamedSymbol<'_>>> {
         let Some(index) = self.file_section_index(SectionType::SYMTAB) else {
             return Ok(Vec::new());
         };
         let linked = self.linked_symbols(index)?;
-        let names = linked.names();
         linked
-            .symbols
-            .iter()
-            .enumerate()
-            .skip(1)
-            .map(|(index, symbol)| names.describe(index, *symbol))
-            .collect()
+            .names()
+            .describe_all(&linked.symbols.symbols, |_| true)
     }
 
     /// Find the symbol with the name `name`.
@@ -198,7 +193,7 @@ impl ElfFile {
     ///
     /// Return an error for the same conditions as [`Self::symbol_list`] and
     /// [`Self::lookup_dynamic_symbol`].
-    pub fn lookup_symbol(&self, name: &str) -> Result<Option<NamedSymbol>> {
+    pub fn lookup_symbol(&self, name: &str) -> Result<Option<NamedSymbol<'_>>> {
         if let Some(index) = self.file_section_index(SectionType::SYMTAB) {
             let linked = self.linked_symbols(index)?;
             let found = linked
@@ -325,7 +320,7 @@ impl ElfFile {
     ///   its string table does not parse, or if the name offset of the signature is outside
     ///   the string table.
     pub fn section_groups(&self) -> Result<Vec<SectionGroup>> {
-        let mut tables: BTreeMap<usize, Option<LinkedSymbols>> = BTreeMap::new();
+        let mut tables: BTreeMap<usize, Option<LinkedSymbols<'_>>> = BTreeMap::new();
         let mut groups = Vec::new();
         for (index, header) in self.section_headers().iter().enumerate() {
             if header.section_type != SectionType::GROUP {
@@ -345,10 +340,10 @@ impl ElfFile {
 
     /// Return the signature of the group section `header`. `tables` holds the symbol tables
     /// that the function already parsed.
-    fn group_signature(
-        &self,
+    fn group_signature<'s>(
+        &'s self,
         header: &SectionHeader,
-        tables: &mut BTreeMap<usize, Option<LinkedSymbols>>,
+        tables: &mut BTreeMap<usize, Option<LinkedSymbols<'s>>>,
     ) -> Result<Option<String>> {
         // An index that does not fit in `usize` is not a section, so the group has no signature.
         let link = usize::try_from(header.link).unwrap_or(usize::MAX);
@@ -383,17 +378,14 @@ impl ElfFile {
                 .and_then(|section| self.section_names().get(section))
                 .cloned());
         }
-        table_string(Some(&linked.strings), symbol.name, SYMTAB_STRINGS).map(Some)
+        table_string(Some(linked.strings), symbol.name, SYMTAB_STRINGS)
+            .map(|name| Some(name.into_owned()))
     }
 
     /// Return the index of the `SHT_SYMTAB_SHNDX` section that links to the symbol table at
     /// `symtab`, if it has file bytes.
     pub(super) fn symbol_index_section(&self, symtab: usize) -> Option<usize> {
-        self.section_headers().iter().position(|header| {
-            header.section_type == SectionType::SYMTAB_SHNDX
-                && header.has_file_data()
-                && usize::try_from(header.link).is_ok_and(|link| link == symtab)
-        })
+        self.space().symbol_index_section(symtab)
     }
 
     /// Return the name of the section at `index`, or an empty string.
@@ -410,7 +402,7 @@ impl ElfFile {
     }
 
     /// Return the string table that `sh_link` of the section at `index` gives.
-    fn linked_strings(&self, index: usize) -> Result<StringTable> {
+    fn linked_strings(&self, index: usize) -> Result<StringTable<'_>> {
         // An index that does not fit in `usize` is out of range, and `section_data` rejects it.
         let link = usize::try_from(self.section_header(index)?.link).unwrap_or(usize::MAX);
         self.section_data(link)
@@ -420,7 +412,7 @@ impl ElfFile {
 
     /// Parse the symbol table section at `index`, its string table and its extended section
     /// indices.
-    fn linked_symbols(&self, index: usize) -> Result<LinkedSymbols> {
+    fn linked_symbols(&self, index: usize) -> Result<LinkedSymbols<'_>> {
         let indices = self
             .symbol_index_section(index)
             .map(|shndx| {

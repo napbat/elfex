@@ -53,7 +53,7 @@ fn builds_a_file_without_program_headers() {
     let phnum = elf.header().phnum;
     elf.program_headers_mut().clear();
     elf.header_mut().phoff = 0;
-    let parsed = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+    let parsed = ElfFile::from_vec(elf.try_build().unwrap()).unwrap();
     assert_eq!(parsed.program_headers(), []);
     // An `e_phoff` of 0 gives no program headers, so the build keeps `e_phnum`.
     assert_eq!((parsed.header().phoff, parsed.header().phnum), (0, phnum));
@@ -70,7 +70,7 @@ fn leaves_extended_program_numbering_for_fewer_headers() {
     assert_eq!(parsed.header().phnum, PN_XNUM);
     let removed = parsed.program_headers_mut().pop().unwrap();
     assert_eq!(removed.segment_type, SegmentType::GNU_STACK);
-    let rebuilt = ElfFile::parse(&parsed.try_build().unwrap()).unwrap();
+    let rebuilt = ElfFile::from_vec(parsed.try_build().unwrap()).unwrap();
     assert_eq!(u32::from(rebuilt.header().phnum), phnum - 1);
     assert_eq!(rebuilt.section_headers()[0].info, 0);
     assert_eq!(rebuilt.program_headers(), parsed.program_headers());
@@ -79,7 +79,7 @@ fn leaves_extended_program_numbering_for_fewer_headers() {
 #[test]
 fn uses_pn_xnum_for_many_program_headers() {
     let elf = with_program_headers(sample(Encoding::ELF64_LE), usize::from(PN_XNUM));
-    let parsed = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+    let parsed = ElfFile::from_vec(elf.try_build().unwrap()).unwrap();
     assert_eq!(parsed.header().phnum, PN_XNUM);
     assert_eq!(parsed.section_headers()[0].info, u32::from(PN_XNUM));
     assert_eq!(parsed.program_headers(), elf.program_headers());
@@ -99,7 +99,7 @@ fn moves_a_section_table_without_offset_to_the_end_of_the_data() {
     let elf = sample(Encoding::ELF32_BE);
     let mut moved = with_program_headers(elf.clone(), elf.program_headers().len());
     moved.header_mut().shoff = 0;
-    let parsed = ElfFile::parse(&moved.try_build().unwrap()).unwrap();
+    let parsed = ElfFile::from_vec(moved.try_build().unwrap()).unwrap();
     let end = u64::try_from(elf.len()).unwrap();
     assert_eq!(parsed.header().shoff, end.next_multiple_of(4));
     assert_eq!(parsed.header().phoff, moved.header().phoff);

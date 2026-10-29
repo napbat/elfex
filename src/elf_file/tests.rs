@@ -59,7 +59,7 @@ fn sample(encoding: Encoding) -> ElfFile {
 /// Build `elf`, parse the output, and check the round trip and the validation.
 fn rebuild(elf: &ElfFile) -> ElfFile {
     let bytes = elf.try_build().unwrap();
-    let parsed = ElfFile::parse(&bytes).unwrap();
+    let parsed = ElfFile::from_vec(bytes.clone()).unwrap();
     assert_eq!(parsed.try_build().unwrap(), bytes);
     let result = parsed.validate();
     assert!(!result.has_errors(), "{result:?}");
@@ -360,7 +360,7 @@ fn adds_a_section_to_a_file_without_section_table() {
         header.shnum = 0;
         header.shstrndx = 0;
         elf.section_headers_mut().clear();
-        let mut stripped = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+        let mut stripped = ElfFile::from_vec(elf.try_build().unwrap()).unwrap();
         assert_eq!(stripped.section_headers(), []);
 
         let index = stripped
@@ -385,7 +385,7 @@ fn keeps_an_unreadable_section_table() {
     Encoding::ELF32_LE
         .put_u32(&mut bytes, 32, 0x7fff_0000)
         .unwrap();
-    let mut parsed = ElfFile::parse(&bytes).unwrap();
+    let mut parsed = ElfFile::from_vec(bytes.clone()).unwrap();
     assert_eq!(parsed.section_headers(), []);
     assert_eq!(parsed.try_build().unwrap(), bytes);
     let section = NewSection::new(".comment", SectionType::PROGBITS, Vec::new());
@@ -597,7 +597,8 @@ fn relocates_the_program_table_at_the_image_origin() {
 
         let built = parsed.try_build().unwrap();
         let image = ElfImage::parse(&built).unwrap();
-        let mapped = ElfImage::parse_mapped(&image.to_mapped_image().unwrap()).unwrap();
+        let mapped_bytes = image.to_mapped_image().unwrap();
+        let mapped = ElfImage::parse_mapped(&mapped_bytes).unwrap();
         assert!(mapped.program_headers().eq(parsed.program_headers().iter()));
     }
 }
@@ -663,7 +664,7 @@ fn does_not_grow_the_program_table_without_section_headers() {
     header.shoff = 0;
     header.shnum = 0;
     header.shstrndx = 0;
-    let mut stripped = ElfFile::parse(&stripped.try_build().unwrap()).unwrap();
+    let mut stripped = ElfFile::from_vec(stripped.try_build().unwrap()).unwrap();
     let phoff = stripped.header().phoff;
     stripped.add_load_segment(PF_R, vec![7; 8], 0).unwrap();
     assert_ne!(stripped.header().phoff, phoff);
@@ -683,13 +684,13 @@ fn ignores_a_section_range_past_the_end_of_the_file() {
     let bytes = elf.try_build().unwrap();
     let size = bytes.len();
 
-    let mut added = ElfFile::parse(&bytes).unwrap();
+    let mut added = ElfFile::from_vec(bytes.clone()).unwrap();
     added
         .add_section(NewSection::new(".y", SectionType::PROGBITS, vec![2]))
         .unwrap();
     assert!(added.try_build().unwrap().len() < size + 0x1000);
 
-    let mut loaded = ElfFile::parse(&bytes).unwrap();
+    let mut loaded = ElfFile::from_vec(bytes).unwrap();
     loaded.add_load_segment(PF_R, vec![1; 4], 0).unwrap();
     assert!(loaded.try_build().unwrap().len() < size + 0x4000);
 }
@@ -700,7 +701,7 @@ fn keeps_an_unreadable_section_table_out_of_appends() {
     // the file, and the parser cannot read it.
     let mut bytes = sample(Encoding::ELF64_LE).build();
     Encoding::ELF64_LE.put_u16(&mut bytes, 58, 0x80).unwrap();
-    let mut elf = ElfFile::parse(&bytes).unwrap();
+    let mut elf = ElfFile::from_vec(bytes.clone()).unwrap();
     assert_eq!(elf.section_headers(), []);
     let error = elf.add_load_segment(PF_R, vec![7; 0x100], 0).unwrap_err();
     assert!(matches!(error.kind, ErrorKind::InvalidSection(_)));
@@ -783,7 +784,7 @@ fn refuses_an_edit_that_needs_too_much_padding() {
             }
         }
     }
-    let after = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+    let after = ElfFile::from_vec(elf.try_build().unwrap()).unwrap();
     assert!(u64::try_from(after.len()).unwrap() < MAX_APPEND_PADDING);
     assert!(before.len() <= after.len());
 }

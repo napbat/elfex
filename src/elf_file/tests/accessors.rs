@@ -44,6 +44,45 @@ fn edits_the_data_buffer() {
 }
 
 #[test]
+fn keeps_any_storage_type() {
+    let elf = sample(Encoding::ELF64_LE);
+    let bytes = elf.build();
+
+    // The parse of a slice borrows the bytes.
+    let borrowed = ElfFile::parse(&bytes).unwrap();
+    assert!(core::ptr::eq(borrowed.as_bytes(), bytes.as_slice()));
+    assert_eq!(borrowed, elf);
+    assert_eq!(borrowed.exports().unwrap(), elf.exports().unwrap());
+
+    // A header edit does not need mutable bytes.
+    let mut edited = ElfFile::parse(&bytes).unwrap();
+    edited.set_entry_point(0x1234);
+    let built = edited.try_build().unwrap();
+    assert_eq!(ElfFile::parse(&built).unwrap().entry_point(), 0x1234);
+    assert!(core::ptr::eq(edited.into_inner(), bytes.as_slice()));
+
+    // A mutable slice takes edits in place.
+    let mut copy = bytes.clone();
+    let mut in_place = ElfFile::new(copy.as_mut_slice()).unwrap();
+    let offset = target_offset(&elf, 7);
+    in_place.bytes_at_mut(offset, 1).unwrap()[0] = 0x42;
+    assert_eq!(in_place.section_data(7).unwrap()[0], 0x42);
+    assert_eq!(copy[usize::try_from(offset).unwrap()], 0x42);
+
+    // An owned copy takes the edits that make the file larger.
+    let mut owned = ElfFile::new(bytes.clone().into_boxed_slice())
+        .unwrap()
+        .into_owned();
+    let section = NewSection::new(".new", SectionType::PROGBITS, vec![1, 2]);
+    let index = owned.add_section(section).unwrap();
+    assert_eq!(owned.section_data(index).unwrap(), [1, 2]);
+    assert_eq!(
+        ElfFile::from_vec(bytes.clone()).unwrap().into_inner(),
+        bytes
+    );
+}
+
+#[test]
 fn rejects_a_load_segment_past_the_end_of_the_file() {
     let mut elf = sample(Encoding::ELF64_LE);
     let data = elf.section_by_name(".data").unwrap().header.addr;

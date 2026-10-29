@@ -4,7 +4,7 @@
 use super::*;
 
 /// Return a `PT_LOAD` segment at `vaddr` with file offset `offset`, size `memsz` and `data`.
-fn load(offset: u64, vaddr: u64, memsz: u64, data: Vec<u8>) -> Segment {
+fn load(offset: u64, vaddr: u64, memsz: u64, data: Vec<u8>) -> Segment<'static> {
     Segment {
         header: ProgramHeader {
             segment_type: SegmentType::LOAD,
@@ -16,12 +16,12 @@ fn load(offset: u64, vaddr: u64, memsz: u64, data: Vec<u8>) -> Segment {
             memsz,
             align: 0x1000,
         },
-        data,
+        data: data.into(),
     }
 }
 
 /// Return an ELF64 image with `segments` and the program header table after the ELF header.
-fn image_with(segments: Vec<Segment>) -> ElfImage {
+fn image_with(segments: Vec<Segment<'static>>) -> ElfImage<'static> {
     let mut header = FileHeader::new(Encoding::ELF64_LE, FileType::DYN, Machine::X86_64);
     header.phoff = 64;
     ElfImage::new(header, segments)
@@ -101,7 +101,7 @@ fn memory_access_rejects_bad_ranges() {
         .write_vaddr(to_u64(unallocatable()) + 0x10, &[1])
         .unwrap_err();
     assert!(matches!(error.kind(), ErrorKind::Generic(_)), "{error:?}");
-    assert_eq!(image.segments[0].data, [1; 0x10]);
+    assert_eq!(*image.segments[0].data, [1; 0x10]);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn dynamic_segment_without_data_reads_load_memory() {
             memsz: 0x20,
             ..ProgramHeader::default()
         },
-        data: Vec::new(),
+        data: Vec::new().into(),
     };
     image.segments.push(dynamic(0x1080));
     let table = image.dynamic().unwrap().unwrap();
@@ -180,7 +180,9 @@ fn file_io_reports_missing_paths() {
         crate::ElfHeaders::from_file(&path).unwrap_err().kind(),
         ErrorKind::Io(_)
     ));
-    let image = ElfImage::parse(&sample(Encoding::ELF64_LE)).unwrap();
+    let image = ElfImage::parse(&sample(Encoding::ELF64_LE))
+        .unwrap()
+        .into_owned();
     assert!(matches!(
         image.write_to_file(&path).unwrap_err().kind(),
         ErrorKind::Io(_)

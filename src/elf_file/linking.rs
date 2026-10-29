@@ -4,13 +4,14 @@
 //! `SHT_NOTE` sections). If a section is absent, they read the table through the dynamic
 //! table, as `ElfImage` does.
 
-use super::ElfFile;
+use super::{ElfFile, FileSpace};
 use crate::Result;
-use crate::dynamic::DynamicTable;
+use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
 use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::header::Machine;
+use crate::linking::symbols::{is_any, is_export, is_import};
 use crate::linking::{
     self, AddressSpace, DynamicRelocations, Linker, LinkingView, NoteSource, SectionTable,
     SegmentBytes, TableSection, VersionTables,
@@ -22,24 +23,24 @@ use crate::section::SectionType;
 use crate::strtab::StringTable;
 use crate::symbol::{NamedSymbol, SymbolTable};
 
-impl AddressSpace for ElfFile {
+impl<'a> AddressSpace<'a> for FileSpace<'a> {
     fn encoding(&self) -> Encoding {
-        ElfFile::encoding(self)
+        self.headers().encoding()
     }
 
     fn machine(&self) -> Machine {
-        ElfFile::machine(self)
+        self.headers().machine()
     }
 
-    fn slice_from_vaddr(&self, vaddr: u64) -> Result<&[u8]> {
-        ElfFile::slice_from_vaddr(self, vaddr)
+    fn slice_from_vaddr(&self, vaddr: u64) -> Result<&'a [u8]> {
+        FileSpace::slice_from_vaddr(self, vaddr)
     }
 
     fn resolve_pointer(&self, value: u64) -> u64 {
         value
     }
 
-    fn dynamic_bytes(&self) -> Result<Option<&[u8]>> {
+    fn dynamic_bytes(&self) -> Result<Option<&'a [u8]>> {
         if let Some(index) = self.file_section_index(SectionType::DYNAMIC) {
             return self.section_data(index).map(Some);
         }
@@ -49,8 +50,9 @@ impl AddressSpace for ElfFile {
             .map(|segment| segment.data))
     }
 
-    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'_>>> {
-        self.program_headers()
+    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'a>>> {
+        self.headers()
+            .program_headers
             .iter()
             .enumerate()
             .filter(|(_, header)| header.segment_type == segment_type)
@@ -66,9 +68,9 @@ impl AddressSpace for ElfFile {
             .collect()
     }
 
-    fn note_sources(&self) -> Result<Vec<NoteSource<'_>>> {
+    fn note_sources(&self) -> Result<Vec<NoteSource<'a>>> {
         let mut sources = Vec::new();
-        for (index, header) in self.section_headers().iter().enumerate() {
+        for (index, header) in self.headers().section_headers.iter().enumerate() {
             if header.section_type == SectionType::NOTE && header.has_file_data() {
                 sources.push(NoteSource {
                     data: self.section_data(index)?,
@@ -90,7 +92,7 @@ impl AddressSpace for ElfFile {
             .collect())
     }
 
-    fn table_section(&self, table: TableSection) -> Result<Option<SectionTable<'_>>> {
+    fn table_section(&self, table: TableSection) -> Result<Option<SectionTable<'a>>> {
         let index = match table {
             TableSection::DynamicStrings => self.dynamic_strings_index(),
             TableSection::DynamicSymbols => self.file_section_index(SectionType::DYNSYM),
@@ -104,19 +106,24 @@ impl AddressSpace for ElfFile {
         let Some(index) = index else {
             return Ok(None);
         };
-        let header = self.section_header(index)?;
+        let data = self.section_data(index)?;
+        // `section_data` checks the index.
+        let Some(header) = self.headers().section_headers.get(index) else {
+            return Ok(None);
+        };
         Ok(Some(SectionTable {
-            data: self.section_data(index)?,
+            data,
             entsize: header.entsize,
             info: header.info,
         }))
     }
 }
 
-impl ElfFile {
+impl<'a> FileSpace<'a> {
     /// Return the index of the first section of `section_type` with file bytes.
-    pub(super) fn file_section_index(&self, section_type: SectionType) -> Option<usize> {
-        self.section_headers()
+    pub(crate) fn file_section_index(&self, section_type: SectionType) -> Option<usize> {
+        self.headers()
+            .section_headers
             .iter()
             .position(|header| header.section_type == section_type && header.has_file_data())
     }
@@ -124,11 +131,39 @@ impl ElfFile {
     /// Return the index of the `SHT_STRTAB` section that `sh_link` of the `SHT_DYNAMIC`
     /// section gives, if it has file bytes.
     fn dynamic_strings_index(&self) -> Option<usize> {
+        let headers = &self.headers().section_headers;
         let dynamic = self.file_section_index(SectionType::DYNAMIC)?;
-        let link = usize::try_from(self.section_headers().get(dynamic)?.link).ok()?;
-        let strings = self.section_headers().get(link)?;
+        let link = usize::try_from(headers.get(dynamic)?.link).ok()?;
+        let strings = headers.get(link)?;
         (link != 0 && strings.section_type == SectionType::STRTAB && strings.has_file_data())
             .then_some(link)
+    }
+
+    /// Return the index of the `SHT_SYMTAB_SHNDX` section that links to the symbol table at
+    /// `symtab`, if it has file bytes.
+    pub(crate) fn symbol_index_section(&self, symtab: usize) -> Option<usize> {
+        self.headers().section_headers.iter().position(|header| {
+            header.section_type == SectionType::SYMTAB_SHNDX
+                && header.has_file_data()
+                && usize::try_from(header.link).is_ok_and(|link| link == symtab)
+        })
+    }
+
+    /// Return the reader of the dynamic linking tables.
+    fn linker(self) -> Result<Linker<'a>> {
+        Linker::load(self)
+    }
+}
+
+impl<D: AsRef<[u8]>> ElfFile<D> {
+    /// Return the index of the first section of `section_type` with file bytes.
+    pub(super) fn file_section_index(&self, section_type: SectionType) -> Option<usize> {
+        self.space().file_section_index(section_type)
+    }
+
+    /// Return the reader of the dynamic linking tables.
+    fn linker(&self) -> Result<Linker<'_>> {
+        self.space().linker()
     }
 
     /// Return the dynamic table: the `SHT_DYNAMIC` section, or else the file bytes of the
@@ -140,32 +175,37 @@ impl ElfFile {
     ///
     /// Return an error if the bytes of the section or the segment are outside the file.
     pub fn dynamic(&self) -> Result<Option<DynamicTable>> {
-        linking::dynamic_table(self)
+        linking::dynamic_table(&self.space())
     }
 
-    /// Return a view of the dynamic linking tables that parses each table only once.
+    /// Return a view of the dynamic linking tables that parses the symbol tables only once.
     ///
     /// The linking accessors of `ElfFile` (for example [`Self::exports`] and
     /// [`Self::lookup_dynamic_symbol`]) parse the tables again on each call. Use the view to
     /// call more than one of them, or to look up many symbols. The view gives the same
     /// results.
     ///
+    /// The view parses the dynamic symbol table, the version tables and the hash tables
+    /// when you make it. It does not depend on the storage type of the file, and threads can
+    /// share it.
+    ///
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic`].
     pub fn linking(&self) -> Result<LinkingView<'_>> {
-        Linker::load(self).map(LinkingView::new)
+        self.linker().map(LinkingView::new)
     }
 
     /// Return the dynamic string table: the `sh_link` section of the `SHT_DYNAMIC` section,
-    /// or else the bytes at `DT_STRTAB` with the size `DT_STRSZ`.
+    /// or else the bytes at `DT_STRTAB` with the size `DT_STRSZ`. The table borrows the file
+    /// bytes.
     ///
     /// # Errors
     ///
     /// Return an error if the dynamic table does not parse, or if the string table is outside
     /// the file bytes of the `PT_LOAD` segments.
-    pub fn dynamic_strings(&self) -> Result<Option<StringTable>> {
-        self.linking()?.into_string_table()
+    pub fn dynamic_strings(&self) -> Result<Option<StringTable<'_>>> {
+        self.linker()?.strings()
     }
 
     /// Return the dynamic symbol table: the `SHT_DYNSYM` section, or else the table at
@@ -181,7 +221,7 @@ impl ElfFile {
     /// Return an error if a table does not parse, if `DT_SYMENT` is smaller than the symbol
     /// size, or if the table is outside the file bytes of the `PT_LOAD` segments.
     pub fn dynamic_symbols(&self) -> Result<Option<SymbolTable>> {
-        self.linking()?.into_symbol_table()
+        self.linker()?.symbols()
     }
 
     /// Return the names of the needed libraries (`DT_NEEDED`), in table order, as lossy UTF-8.
@@ -191,7 +231,7 @@ impl ElfFile {
     /// Return an error if the dynamic table or the dynamic string table does not parse, or if
     /// a name offset is outside the string table.
     pub fn needed_libraries(&self) -> Result<Vec<String>> {
-        self.linking()?.needed_libraries()
+        self.linker()?.needed_libraries()
     }
 
     /// Return the shared object name (`DT_SONAME`), as lossy UTF-8.
@@ -200,7 +240,7 @@ impl ElfFile {
     ///
     /// Return an error for the same conditions as [`Self::needed_libraries`].
     pub fn soname(&self) -> Result<Option<String>> {
-        self.linking()?.soname()
+        self.linker()?.string_entry(DynamicTag::SONAME)
     }
 
     /// Return the deprecated library search path (`DT_RPATH`), as lossy UTF-8.
@@ -209,7 +249,7 @@ impl ElfFile {
     ///
     /// Return an error for the same conditions as [`Self::needed_libraries`].
     pub fn rpath(&self) -> Result<Option<String>> {
-        self.linking()?.rpath()
+        self.linker()?.string_entry(DynamicTag::RPATH)
     }
 
     /// Return the library search path (`DT_RUNPATH`), as lossy UTF-8.
@@ -218,7 +258,7 @@ impl ElfFile {
     ///
     /// Return an error for the same conditions as [`Self::needed_libraries`].
     pub fn runpath(&self) -> Result<Option<String>> {
-        self.linking()?.runpath()
+        self.linker()?.string_entry(DynamicTag::RUNPATH)
     }
 
     /// Return the path of the program interpreter from the `PT_INTERP` segment.
@@ -233,7 +273,7 @@ impl ElfFile {
     /// - Return [`ErrorKind::InvalidUtf8`](crate::ErrorKind::InvalidUtf8) if the path is not
     ///   UTF-8.
     pub fn interpreter(&self) -> Result<Option<String>> {
-        AddressSpace::segments(self, SegmentType::INTERP)?
+        AddressSpace::segments(&self.space(), SegmentType::INTERP)?
             .first()
             .map(|segment| linking::interpreter_path(segment.data))
             .transpose()
@@ -245,7 +285,7 @@ impl ElfFile {
     ///
     /// Return an error if a note table is outside the file or does not parse.
     pub fn notes(&self) -> Result<Vec<Note>> {
-        linking::notes(self)
+        linking::notes(&self.space())
     }
 
     /// Return the descriptor of the first GNU `NT_GNU_BUILD_ID` note.
@@ -254,7 +294,7 @@ impl ElfFile {
     ///
     /// Return an error for the same conditions as [`Self::notes`].
     pub fn build_id(&self) -> Result<Option<Vec<u8>>> {
-        linking::build_id(self)
+        linking::build_id(&self.space())
     }
 
     /// Return the page size and the mapped files of the first `NT_FILE` note (owner `CORE`)
@@ -268,7 +308,7 @@ impl ElfFile {
     /// Return an error for the same conditions as [`Self::notes`], or if the descriptor
     /// does not parse (see [`parse_nt_file`](crate::note::parse_nt_file)).
     pub fn core_file_mappings(&self) -> Result<Option<(u64, Vec<FileMapping>)>> {
-        linking::core_file_mappings(self)
+        linking::core_file_mappings(&self.space())
     }
 
     /// Return the auxiliary vector of the first `NT_AUXV` note (owner `CORE`) of a core
@@ -281,7 +321,7 @@ impl ElfFile {
     /// Return an error for the same conditions as [`Self::notes`], or if the descriptor
     /// does not parse (see [`parse_auxv`](crate::note::parse_auxv)).
     pub fn auxv(&self) -> Result<Option<Vec<AuxvEntry>>> {
-        linking::auxv(self)
+        linking::auxv(&self.space())
     }
 
     /// Return the relocation tables that the dynamic table names: `DT_RELA`, `DT_REL`,
@@ -294,7 +334,7 @@ impl ElfFile {
     /// `DT_PLTREL` is not `DT_REL` or `DT_RELA`, or if a table is outside the file bytes of
     /// the `PT_LOAD` segments or does not parse.
     pub fn dynamic_relocations(&self) -> Result<DynamicRelocations> {
-        self.linking()?.into_relocations()
+        self.linker()?.relocations()
     }
 
     /// Return the System V hash table at `DT_HASH`.
@@ -303,7 +343,7 @@ impl ElfFile {
     ///
     /// Return an error if the dynamic table or the hash table does not parse.
     pub fn sysv_hash_table(&self) -> Result<Option<SysvHashTable>> {
-        self.linking()?.into_sysv_hash_table()
+        self.linker()?.sysv_hash()
     }
 
     /// Return the GNU hash table at `DT_GNU_HASH`.
@@ -312,7 +352,7 @@ impl ElfFile {
     ///
     /// Return an error if the dynamic table or the hash table does not parse.
     pub fn gnu_hash_table(&self) -> Result<Option<GnuHashTable>> {
-        self.linking()?.into_gnu_hash_table()
+        self.linker()?.gnu_hash()
     }
 
     /// Return the symbol version tables: the `SHT_GNU_versym`, `SHT_GNU_verdef` and
@@ -323,18 +363,19 @@ impl ElfFile {
     ///
     /// Return an error if a table does not parse or is outside the file.
     pub fn version_tables(&self) -> Result<VersionTables> {
-        self.linking()?.into_version_tables()
+        let linker = self.linker()?;
+        linker.versions(&|| Ok(linker.symbols()?.map(|symbols| symbols.len())))
     }
 
     /// Return all dynamic symbols except the null symbol, with their names, sections and
-    /// versions.
+    /// versions. The names borrow the file bytes.
     ///
     /// # Errors
     ///
     /// Return an error if the dynamic symbol table, the dynamic string table or a version
     /// table does not parse, or if a name offset is outside the string table.
-    pub fn dynamic_symbol_list(&self) -> Result<Vec<NamedSymbol>> {
-        self.linking()?.symbols()
+    pub fn dynamic_symbol_list(&self) -> Result<Vec<NamedSymbol<'_>>> {
+        self.linker()?.symbol_list(is_any)
     }
 
     /// Return the exported dynamic symbols: the defined symbols with the binding
@@ -344,8 +385,8 @@ impl ElfFile {
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic_symbol_list`].
-    pub fn exports(&self) -> Result<Vec<NamedSymbol>> {
-        self.linking()?.exports()
+    pub fn exports(&self) -> Result<Vec<NamedSymbol<'_>>> {
+        self.linker()?.symbol_list(is_export)
     }
 
     /// Return the imported dynamic symbols: the symbols with `st_shndx` `SHN_UNDEF`, except
@@ -354,8 +395,8 @@ impl ElfFile {
     /// # Errors
     ///
     /// Return an error for the same conditions as [`Self::dynamic_symbol_list`].
-    pub fn imports(&self) -> Result<Vec<NamedSymbol>> {
-        self.linking()?.imports()
+    pub fn imports(&self) -> Result<Vec<NamedSymbol<'_>>> {
+        self.linker()?.symbol_list(is_import)
     }
 
     /// Find the dynamic symbol with the name `name`.
@@ -368,8 +409,8 @@ impl ElfFile {
     ///
     /// Return an error if a hash table does not parse, or for the same conditions as
     /// [`Self::dynamic_symbol_list`].
-    pub fn lookup_dynamic_symbol(&self, name: &str) -> Result<Option<NamedSymbol>> {
-        self.linking()?.lookup(name)
+    pub fn lookup_dynamic_symbol(&self, name: &str) -> Result<Option<NamedSymbol<'_>>> {
+        self.linker()?.lookup(name)
     }
 
     /// Return the virtual addresses in the `DT_INIT_ARRAY` array, as they are in the file.
@@ -379,7 +420,8 @@ impl ElfFile {
     /// Return an error if `DT_INIT_ARRAYSZ` is missing or is not a multiple of the word size,
     /// or if the array is outside the file bytes of the `PT_LOAD` segments.
     pub fn init_array(&self) -> Result<Vec<u64>> {
-        self.linking()?.init_array()
+        self.linker()?
+            .array(DynamicTag::INIT_ARRAY, DynamicTag::INIT_ARRAYSZ)
     }
 
     /// Return the virtual addresses in the `DT_FINI_ARRAY` array, as they are in the file.
@@ -389,7 +431,8 @@ impl ElfFile {
     /// Return an error for the same conditions as [`Self::init_array`], for
     /// `DT_FINI_ARRAYSZ`.
     pub fn fini_array(&self) -> Result<Vec<u64>> {
-        self.linking()?.fini_array()
+        self.linker()?
+            .array(DynamicTag::FINI_ARRAY, DynamicTag::FINI_ARRAYSZ)
     }
 
     /// Return the virtual addresses in the `DT_PREINIT_ARRAY` array, as they are in the
@@ -400,7 +443,8 @@ impl ElfFile {
     /// Return an error for the same conditions as [`Self::init_array`], for
     /// `DT_PREINIT_ARRAYSZ`.
     pub fn preinit_array(&self) -> Result<Vec<u64>> {
-        self.linking()?.preinit_array()
+        self.linker()?
+            .array(DynamicTag::PREINIT_ARRAY, DynamicTag::PREINIT_ARRAYSZ)
     }
 
     /// Return the `.eh_frame_hdr` table of the first `PT_GNU_EH_FRAME` segment.
@@ -409,6 +453,6 @@ impl ElfFile {
     ///
     /// Return an error if the segment is outside the file or the table does not parse.
     pub fn eh_frame_hdr(&self) -> Result<Option<EhFrameHdr>> {
-        linking::eh_frame_hdr(self)
+        linking::eh_frame_hdr(&self.space())
     }
 }

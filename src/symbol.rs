@@ -465,7 +465,7 @@ impl SymbolTable {
     /// Return the index of the symbol and the symbol. The search skips symbols with an
     /// invalid name offset.
     #[must_use]
-    pub fn find_by_name(&self, strings: &StringTable, name: &[u8]) -> Option<(usize, &Symbol)> {
+    pub fn find_by_name(&self, strings: &StringTable<'_>, name: &[u8]) -> Option<(usize, &Symbol)> {
         self.symbols.iter().enumerate().find(|(_, symbol)| {
             strings
                 .get_bytes(symbol.name)

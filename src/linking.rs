@@ -14,9 +14,12 @@
 //! # Reuse of the parsed tables
 //!
 //! Each accessor parses the tables that it needs again. `ElfFile::linking()` and
-//! `ElfImage::linking()` return a [`LinkingView`] that parses each table only once. Use it to
-//! call more than one accessor, or to look up many symbols: each lookup then uses the hash
-//! table directly.
+//! `ElfImage::linking()` return a [`LinkingView`] that parses the symbol tables only once.
+//! Use it to call more than one accessor, or to look up many symbols: each lookup then uses
+//! the hash table directly. The view is `Send` and `Sync`, so threads can share it.
+//!
+//! The accessors do not copy the tables: the string tables and the symbol names borrow the
+//! bytes of the file or the image.
 //!
 //! # Table sources
 //!
@@ -33,19 +36,16 @@
 //! [`ElfImage::resolve_pointer`](crate::ElfImage::resolve_pointer).
 
 mod relocations;
-mod symbols;
+pub(crate) mod symbols;
 #[cfg(test)]
 mod tests;
 mod view;
 
 pub use view::LinkingView;
 
-use core::cell::OnceCell;
-
 use crate::dynamic::{DynamicTable, DynamicTag};
 use crate::eh_frame::EhFrameHdr;
 use crate::endian::Encoding;
-use crate::hash::{GnuHashTable, SysvHashTable};
 use crate::header::Machine;
 use crate::note::{
     AuxvEntry, ELF_NOTE_CORE, ELF_NOTE_GNU, FileMapping, NT_AUXV, NT_FILE, NT_GNU_BUILD_ID, Note,
@@ -55,7 +55,6 @@ use crate::prelude::*;
 use crate::program::{ProgramHeader, SegmentType};
 use crate::reloc::{Relocation, RelocationTable, RelrTable};
 use crate::strtab::StringTable;
-use crate::symbol::{SymbolSectionIndexTable, SymbolTable};
 use crate::version::{VersionDefinitionTable, VersionMap, VersionRequirementTable, VersymTable};
 use crate::{Error, Result};
 
@@ -161,7 +160,9 @@ pub(crate) enum TableSection {
 }
 
 /// The view of an `ElfFile` or an `ElfImage` that the linking accessors use.
-pub(crate) trait AddressSpace {
+///
+/// The bytes that the methods return borrow the source for the lifetime `'a`, not the view.
+pub(crate) trait AddressSpace<'a> {
     /// Return the class and the byte order.
     fn encoding(&self) -> Encoding;
 
@@ -170,29 +171,34 @@ pub(crate) trait AddressSpace {
 
     /// Return the bytes from the virtual address `vaddr` to the end of the data of its
     /// segment.
-    fn slice_from_vaddr(&self, vaddr: u64) -> Result<&[u8]>;
+    fn slice_from_vaddr(&self, vaddr: u64) -> Result<&'a [u8]>;
 
     /// Translate a `d_ptr` value of the dynamic table to a virtual address of the file.
     fn resolve_pointer(&self, value: u64) -> u64;
 
     /// Return the bytes of the dynamic table, or `None` if there is no dynamic table.
-    fn dynamic_bytes(&self) -> Result<Option<&[u8]>>;
+    fn dynamic_bytes(&self) -> Result<Option<&'a [u8]>>;
 
     /// Return the bytes of each segment of `segment_type`, in program header order.
-    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'_>>>;
+    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'a>>>;
 
     /// Return the bytes of each note table.
-    fn note_sources(&self) -> Result<Vec<NoteSource<'_>>>;
+    fn note_sources(&self) -> Result<Vec<NoteSource<'a>>>;
 
     /// Return the section that holds a table, or `None` to read the table through the
     /// dynamic table. The default implementation returns `None`.
-    fn table_section(&self, _table: TableSection) -> Result<Option<SectionTable<'_>>> {
+    fn table_section(&self, _table: TableSection) -> Result<Option<SectionTable<'a>>> {
         Ok(None)
     }
 }
 
+/// An [`AddressSpace`] that threads can share.
+pub(crate) type SharedSpace<'a> = Box<dyn AddressSpace<'a> + Send + Sync + 'a>;
+
 /// Parse the dynamic table of `space`, as it is in the source.
-pub(crate) fn dynamic_table<S: AddressSpace + ?Sized>(space: &S) -> Result<Option<DynamicTable>> {
+pub(crate) fn dynamic_table<'a, S: AddressSpace<'a> + ?Sized>(
+    space: &S,
+) -> Result<Option<DynamicTable>> {
     let Some(bytes) = space.dynamic_bytes()? else {
         return Ok(None);
     };
@@ -201,7 +207,7 @@ pub(crate) fn dynamic_table<S: AddressSpace + ?Sized>(space: &S) -> Result<Optio
 }
 
 /// Parse all notes of `space`, in source order.
-pub(crate) fn notes<S: AddressSpace>(space: &S) -> Result<Vec<Note>> {
+pub(crate) fn notes<'a, S: AddressSpace<'a>>(space: &S) -> Result<Vec<Note>> {
     let mut notes = Vec::new();
     for source in space.note_sources()? {
         let table = NoteTable::parse(source.data, space.encoding(), source.align)
@@ -212,7 +218,7 @@ pub(crate) fn notes<S: AddressSpace>(space: &S) -> Result<Vec<Note>> {
 }
 
 /// Return the descriptor of the first GNU `NT_GNU_BUILD_ID` note of `space`.
-pub(crate) fn build_id<S: AddressSpace>(space: &S) -> Result<Option<Vec<u8>>> {
+pub(crate) fn build_id<'a, S: AddressSpace<'a>>(space: &S) -> Result<Option<Vec<u8>>> {
     Ok(notes(space)?
         .into_iter()
         .find(|note| note.is(ELF_NOTE_GNU, NT_GNU_BUILD_ID))
@@ -221,7 +227,7 @@ pub(crate) fn build_id<S: AddressSpace>(space: &S) -> Result<Option<Vec<u8>>> {
 
 /// Return the page size and the mapped files of the first `NT_FILE` note (owner `CORE`) of
 /// `space`.
-pub(crate) fn core_file_mappings<S: AddressSpace>(
+pub(crate) fn core_file_mappings<'a, S: AddressSpace<'a>>(
     space: &S,
 ) -> Result<Option<(u64, Vec<FileMapping>)>> {
     notes(space)?
@@ -232,7 +238,7 @@ pub(crate) fn core_file_mappings<S: AddressSpace>(
 }
 
 /// Return the entries of the first `NT_AUXV` note (owner `CORE`) of `space`.
-pub(crate) fn auxv<S: AddressSpace>(space: &S) -> Result<Option<Vec<AuxvEntry>>> {
+pub(crate) fn auxv<'a, S: AddressSpace<'a>>(space: &S) -> Result<Option<Vec<AuxvEntry>>> {
     notes(space)?
         .iter()
         .find(|note| note.is(ELF_NOTE_CORE, NT_AUXV))
@@ -241,7 +247,7 @@ pub(crate) fn auxv<S: AddressSpace>(space: &S) -> Result<Option<Vec<AuxvEntry>>>
 }
 
 /// Parse the `.eh_frame_hdr` data of the first `PT_GNU_EH_FRAME` segment of `space`.
-pub(crate) fn eh_frame_hdr<S: AddressSpace>(space: &S) -> Result<Option<EhFrameHdr>> {
+pub(crate) fn eh_frame_hdr<'a, S: AddressSpace<'a>>(space: &S) -> Result<Option<EhFrameHdr>> {
     let Some(segment) = space
         .segments(SegmentType::GNU_EH_FRAME)?
         .into_iter()
@@ -270,7 +276,7 @@ pub(crate) fn interpreter_path(bytes: &[u8]) -> Result<String> {
 }
 
 /// Read the string at `offset` in the dynamic string table, as lossy UTF-8.
-fn dynamic_string(strings: Option<&StringTable>, offset: u64) -> Result<String> {
+fn dynamic_string(strings: Option<StringTable<'_>>, offset: u64) -> Result<String> {
     let strings = strings.ok_or_else(|| {
         Error::invalid_table("the dynamic string table (DT_STRTAB) is missing")
             .in_structure("dynamic table")
@@ -287,60 +293,22 @@ fn dynamic_string(strings: Option<&StringTable>, offset: u64) -> Result<String> 
         .map_err(|error| error.in_structure("DT_STRTAB"))
 }
 
-/// The tables that a [`Linker`] parsed. Each cell holds a table after its first successful
-/// parse. An error is not kept: the next call parses the table again and returns the error
-/// again.
-#[derive(Default)]
-struct Cache {
-    /// The dynamic string table.
-    strings: OnceCell<Option<StringTable>>,
-    /// The dynamic symbol table.
-    symbols: OnceCell<Option<SymbolTable>>,
-    /// The extended section indices of the dynamic symbols.
-    indices: OnceCell<Option<SymbolSectionIndexTable>>,
-    /// The version tables and their map.
-    versions: OnceCell<(VersionTables, VersionMap)>,
-    /// The System V hash table.
-    sysv_hash: OnceCell<Option<SysvHashTable>>,
-    /// The GNU hash table.
-    gnu_hash: OnceCell<Option<GnuHashTable>>,
-    /// The relocation tables of the dynamic table.
-    relocations: OnceCell<DynamicRelocations>,
-    /// The indices of the named dynamic symbols, sorted by name and then by index, for a
-    /// lookup without a hash table.
-    sorted_names: OnceCell<Vec<u32>>,
-}
-
-/// Return the value in `cell`. If `cell` is empty, fill it with the result of `load`, or
-/// return the error of `load`.
-fn cached<T>(cell: &OnceCell<T>, load: impl FnOnce() -> Result<T>) -> Result<&T> {
-    if let Some(value) = cell.get() {
-        return Ok(value);
-    }
-    let value = load()?;
-    Ok(cell.get_or_init(|| value))
-}
-
 /// The dynamic table of an address space and the readers of the tables that it names.
 ///
-/// The linker keeps each table that it parsed, so a second call does not parse it again.
+/// Each method parses its table again. [`LinkingView`] keeps the parsed tables.
 pub(crate) struct Linker<'a> {
     /// The address space.
-    space: &'a (dyn AddressSpace + Sync),
+    space: SharedSpace<'a>,
     /// The dynamic table as it is in the source, or `None` if there is no dynamic table.
     dynamic: Option<DynamicTable>,
-    /// The parsed tables.
-    cache: Cache,
 }
 
 impl<'a> Linker<'a> {
     /// Parse the dynamic table of `space`.
-    pub(crate) fn load(space: &'a (dyn AddressSpace + Sync)) -> Result<Self> {
-        Ok(Self {
-            space,
-            dynamic: dynamic_table(space)?,
-            cache: Cache::default(),
-        })
+    pub(crate) fn load(space: impl AddressSpace<'a> + Send + Sync + 'a) -> Result<Self> {
+        let space: SharedSpace<'a> = Box::new(space);
+        let dynamic = dynamic_table(&*space)?;
+        Ok(Self { space, dynamic })
     }
 
     /// Return the dynamic table, or `None` if there is no dynamic table.
@@ -406,13 +374,8 @@ impl<'a> Linker<'a> {
     ///
     /// `ElfFile` prefers the `sh_link` string table of the `SHT_DYNAMIC` section. Else the
     /// table is at `DT_STRTAB` with the size `DT_STRSZ`. Without `DT_STRSZ`, the table goes
-    /// to the end of its segment.
-    pub(crate) fn strings(&self) -> Result<Option<&StringTable>> {
-        cached(&self.cache.strings, || self.load_strings()).map(Option::as_ref)
-    }
-
-    /// Parse the dynamic string table (see [`Self::strings`]).
-    fn load_strings(&self) -> Result<Option<StringTable>> {
+    /// to the end of its segment. The table borrows the bytes of the source.
+    pub(crate) fn strings(&self) -> Result<Option<StringTable<'a>>> {
         if let Some(section) = self.space.table_section(TableSection::DynamicStrings)? {
             return Ok(Some(StringTable::parse(section.data)));
         }
@@ -424,12 +387,6 @@ impl<'a> Linker<'a> {
             None => self.slice(address, "DT_STRTAB")?,
         };
         Ok(Some(StringTable::parse(bytes)))
-    }
-
-    /// Return the dynamic string table and drop the other tables.
-    pub(crate) fn into_strings(self) -> Result<Option<StringTable>> {
-        self.strings()?;
-        Ok(self.cache.strings.into_inner().flatten())
     }
 
     /// Return the names of the `DT_NEEDED` entries, in table order.

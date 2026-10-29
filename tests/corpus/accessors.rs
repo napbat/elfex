@@ -26,7 +26,7 @@ macro_rules! call_accessors {
 /// Parse the file, and check the round trip, the validation and the accessors of `ElfFile`.
 ///
 /// Return the parsed file, or `None` if it does not parse.
-pub fn check_file(bytes: &[u8], findings: &mut Findings) -> Option<ElfFile> {
+pub fn check_file<'a>(bytes: &'a [u8], findings: &mut Findings) -> Option<ElfFile<&'a [u8]>> {
     let file = match ElfFile::parse(bytes) {
         Ok(file) => file,
         Err(error) => {
@@ -92,7 +92,7 @@ pub fn check_file(bytes: &[u8], findings: &mut Findings) -> Option<ElfFile> {
 }
 
 /// Parse `.eh_frame` if the file has it with file bytes.
-fn check_eh_frame(file: &ElfFile, findings: &mut Findings) {
+fn check_eh_frame(file: &ElfFile<&[u8]>, findings: &mut Findings) {
     for section in file.sections() {
         let header = section.header;
         if section.name != ".eh_frame" || header.section_type == SectionType::NOBITS {
@@ -110,14 +110,14 @@ const ACCESSOR_LOOKUPS: usize = 32;
 
 /// Check that the view gives the same exports as the accessor, and that it finds each exported
 /// name. Check that the accessor `lookup` gives the same result for a sample of the names.
-fn check_lookup<F>(
-    exports: &[NamedSymbol],
+fn check_lookup<'s, F>(
+    exports: &[NamedSymbol<'_>],
     what: &str,
     view: elfex::Result<LinkingView<'_>>,
     lookup: F,
     findings: &mut Findings,
 ) where
-    F: Fn(&str) -> elfex::Result<Option<NamedSymbol>>,
+    F: Fn(&str) -> elfex::Result<Option<NamedSymbol<'s>>>,
 {
     let view = match view {
         Ok(view) => view,
@@ -180,7 +180,7 @@ fn first_difference(bytes: &[u8], built: &[u8]) -> String {
 
 /// Check the loader view of the file: the accessors of `ElfImage`, the mapped image and the
 /// raw file that `ElfImage::try_build` writes.
-pub fn check_image(file: &ElfFile, bytes: &[u8], findings: &mut Findings) {
+pub fn check_image(file: &ElfFile<&[u8]>, bytes: &[u8], findings: &mut Findings) {
     let image = match ElfImage::parse(bytes) {
         Ok(image) => image,
         Err(error) => {
@@ -245,7 +245,7 @@ pub fn check_image(file: &ElfFile, bytes: &[u8], findings: &mut Findings) {
 }
 
 /// Map the image, parse the mapped bytes and compare the exports and the needed libraries.
-fn check_mapped(file: &ElfFile, image: &ElfImage, findings: &mut Findings) {
+fn check_mapped(file: &ElfFile<&[u8]>, image: &ElfImage<'_>, findings: &mut Findings) {
     let mapped = match image.to_mapped_image() {
         Ok(mapped) => mapped,
         Err(error) => {
@@ -278,12 +278,12 @@ fn check_mapped(file: &ElfFile, image: &ElfImage, findings: &mut Findings) {
 }
 
 /// Return the name, the version and the value of each symbol.
-fn export_keys(list: &[NamedSymbol]) -> Vec<(String, Option<String>, u64)> {
+fn export_keys(list: &[NamedSymbol<'_>]) -> Vec<(String, Option<String>, u64)> {
     list.iter()
         .map(|symbol| {
             (
-                symbol.name.clone(),
-                symbol.version.clone(),
+                symbol.name.to_string(),
+                symbol.version.as_deref().map(str::to_owned),
                 symbol.symbol.value,
             )
         })

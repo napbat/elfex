@@ -39,7 +39,7 @@ fn android_rela_and_crel_through_the_dynamic_table() {
         (DynamicTag::ANDROID_RELASZ, len(&android_bytes)),
         (DynamicTag::CREL, crel_address),
     ]);
-    let relocations = Linker::load(&flat).unwrap().into_relocations().unwrap();
+    let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
     assert_eq!(relocations.android.as_ref(), Some(&android));
     assert_eq!(relocations.crel.as_ref(), Some(&crel));
     assert_eq!((&relocations.rela, &relocations.rel), (&None, &None));
@@ -65,7 +65,7 @@ fn android_rel_through_the_dynamic_table() {
         (DynamicTag::ANDROID_REL, address),
         (DynamicTag::ANDROID_RELSZ, len(&bytes)),
     ]);
-    let relocations = Linker::load(&flat).unwrap().into_relocations().unwrap();
+    let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
     assert_eq!(relocations.android, Some(android));
 }
 
@@ -74,7 +74,7 @@ fn malformed_packed_tables_have_the_tag_and_the_address() {
     let encoding = Encoding::ELF32_LE;
     let mut flat = Flat::new(encoding, Machine::ARM);
     let address = flat.place(b"APS1\0\0");
-    let error_of = |flat: &Flat| Linker::load(flat).unwrap().into_relocations().unwrap_err();
+    let error_of = |flat: &Flat| Linker::load(flat).unwrap().relocations().unwrap_err();
 
     flat.set_dynamic(&[(DynamicTag::ANDROID_REL, address)]);
     let error = error_of(&flat);
@@ -109,7 +109,7 @@ fn malformed_packed_tables_have_the_tag_and_the_address() {
 }
 
 #[test]
-fn the_linker_parses_each_table_once() {
+fn the_view_parses_the_relocations_at_each_call() {
     let encoding = Encoding::ELF64_LE;
     let bytes = table(true)
         .write_android_packed(encoding, Machine::X86_64)
@@ -120,8 +120,8 @@ fn the_linker_parses_each_table_once() {
         (DynamicTag::ANDROID_RELA, address),
         (DynamicTag::ANDROID_RELASZ, len(&bytes)),
     ]);
-    let linker = Linker::load(&flat).unwrap();
-    let first: *const DynamicRelocations = linker.relocations().unwrap();
-    let second: *const DynamicRelocations = linker.relocations().unwrap();
-    assert_eq!(first, second);
+    let view = LinkingView::new(Linker::load(&flat).unwrap());
+    let first = view.relocations().unwrap();
+    assert_eq!(first.android, Some(table(true)));
+    assert_eq!(view.relocations().unwrap(), first);
 }

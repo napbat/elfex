@@ -27,13 +27,13 @@ macro_rules! linking_trait {
             $(fn $name(&self, $($arg: $arg_type),*) -> Result<$ret>;)*
         }
 
-        impl Linking for ElfFile {
+        impl<D: AsRef<[u8]>> Linking for ElfFile<D> {
             $(fn $name(&self, $($arg: $arg_type),*) -> Result<$ret> {
                 ElfFile::$name(self, $($arg),*)
             })*
         }
 
-        impl Linking for ElfImage {
+        impl Linking for ElfImage<'_> {
             $(fn $name(&self, $($arg: $arg_type),*) -> Result<$ret> {
                 ElfImage::$name(self, $($arg),*)
             })*
@@ -43,7 +43,7 @@ macro_rules! linking_trait {
 
 linking_trait! {
     dynamic() -> Option<DynamicTable>;
-    dynamic_strings() -> Option<StringTable>;
+    dynamic_strings() -> Option<StringTable<'_>>;
     dynamic_symbols() -> Option<SymbolTable>;
     needed_libraries() -> Vec<String>;
     soname() -> Option<String>;
@@ -58,10 +58,10 @@ linking_trait! {
     sysv_hash_table() -> Option<SysvHashTable>;
     gnu_hash_table() -> Option<GnuHashTable>;
     version_tables() -> VersionTables;
-    dynamic_symbol_list() -> Vec<NamedSymbol>;
-    exports() -> Vec<NamedSymbol>;
-    imports() -> Vec<NamedSymbol>;
-    lookup_dynamic_symbol(name: &str) -> Option<NamedSymbol>;
+    dynamic_symbol_list() -> Vec<NamedSymbol<'_>>;
+    exports() -> Vec<NamedSymbol<'_>>;
+    imports() -> Vec<NamedSymbol<'_>>;
+    lookup_dynamic_symbol(name: &str) -> Option<NamedSymbol<'_>>;
     init_array() -> Vec<u64>;
     fini_array() -> Vec<u64>;
     preinit_array() -> Vec<u64>;
@@ -72,14 +72,14 @@ linking_trait! {
 type Versioned = (String, Option<String>, Option<String>, bool);
 
 /// Return the name and version values of `symbols`, sorted by name.
-fn versioned(symbols: &[NamedSymbol]) -> Vec<Versioned> {
+fn versioned(symbols: &[NamedSymbol<'_>]) -> Vec<Versioned> {
     let mut list: Vec<Versioned> = symbols
         .iter()
         .map(|symbol| {
             (
-                symbol.name.clone(),
-                symbol.version.clone(),
-                symbol.version_file.clone(),
+                symbol.name.to_string(),
+                symbol.version.as_deref().map(str::to_owned),
+                symbol.version_file.as_deref().map(str::to_owned),
                 symbol.hidden,
             )
         })
@@ -292,7 +292,8 @@ fn check_all_views(spec: Spec) {
     assert_eq!(restored.restore_dynamic_pointers().unwrap(), pointers);
     assert_eq!(restored.dynamic().unwrap().unwrap(), fixture.tables.dynamic);
     assert_eq!(restored.restore_dynamic_pointers().unwrap(), 0);
-    let dump = ElfImage::parse(&restored.try_build().unwrap()).unwrap();
+    let dump_bytes = restored.try_build().unwrap();
+    let dump = ElfImage::parse(&dump_bytes).unwrap();
     assert_eq!(dump.dynamic().unwrap().unwrap(), fixture.tables.dynamic);
     // Only the `d_ptr` fields change.
     let start = to_usize(fixture.layout.address(".dynamic") - origin);
@@ -411,7 +412,7 @@ fn check_empty(view: &impl Linking) {
         DynamicRelocations::default()
     );
     assert_eq!(view.version_tables().unwrap(), VersionTables::default());
-    assert_eq!(view.exports().unwrap(), Vec::<NamedSymbol>::new());
+    assert_eq!(view.exports().unwrap(), Vec::<NamedSymbol<'_>>::new());
     assert_eq!(view.lookup_dynamic_symbol("main").unwrap(), None);
     assert_eq!(view.build_id().unwrap(), None);
     assert_eq!(view.init_array().unwrap(), Vec::<u64>::new());

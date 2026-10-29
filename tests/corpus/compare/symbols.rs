@@ -8,7 +8,7 @@ use crate::reference::{array, string};
 use crate::report::{DYNAMIC_SYMBOLS, Findings, SYMBOLS};
 
 /// Compare the dynamic symbols (`DynamicSymbols`) and the static symbols (`Symbols`).
-pub fn compare(file: &ElfFile, json: &Value, findings: &mut Findings) {
+pub fn compare(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     match file.dynamic_symbol_list() {
         Ok(list) => table(
             file,
@@ -30,7 +30,7 @@ pub fn compare(file: &ElfFile, json: &Value, findings: &mut Findings) {
 /// - A section symbol without a name has the name of its section.
 /// - A dynamic symbol with a version has the suffix `@version`. The suffix is `@@version` for
 ///   the default version of a defined symbol.
-pub fn display_name(file: &ElfFile, symbol: &NamedSymbol, dynamic: bool) -> String {
+pub fn display_name(file: &ElfFile<&[u8]>, symbol: &NamedSymbol<'_>, dynamic: bool) -> String {
     if symbol.name.is_empty() && symbol.symbol.symbol_type() == SymbolType::SECTION {
         return symbol
             .section_index
@@ -46,16 +46,16 @@ pub fn display_name(file: &ElfFile, symbol: &NamedSymbol, dynamic: bool) -> Stri
             let separator = if default { "@@" } else { "@" };
             format!("{}{separator}{version}", symbol.name)
         }
-        _ => symbol.name.clone(),
+        _ => symbol.name.to_string(),
     }
 }
 
 /// Compare one symbol table. The reference lists the null symbol at index 0, and elfex does
 /// not.
 fn table(
-    file: &ElfFile,
+    file: &ElfFile<&[u8]>,
     items: &[Value],
-    list: &[NamedSymbol],
+    list: &[NamedSymbol<'_>],
     category: &'static str,
     findings: &mut Findings,
 ) {

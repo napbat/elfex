@@ -125,7 +125,7 @@ fn parse_short_entry_errors() {
 
 #[test]
 fn strings() {
-    let strings = StringTable::new(b"\0libc.so.6\0libfoo.so\0/opt\0".to_vec());
+    let strings = StringTable::parse(b"\0libc.so.6\0libfoo.so\0/opt\0");
     let mut table = DynamicTable::new();
     table.push(DynamicEntry::new(DynamicTag::NEEDED, 1));
     table.push(DynamicEntry::new(DynamicTag::SONAME, 11));

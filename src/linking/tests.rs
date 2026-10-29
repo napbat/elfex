@@ -17,6 +17,7 @@ use crate::version::{
 
 mod packed;
 mod sections;
+mod view;
 
 /// One contiguous memory range at `base`, a dynamic table and note tables.
 struct Flat {
@@ -70,7 +71,7 @@ impl Flat {
     }
 }
 
-impl AddressSpace for Flat {
+impl<'a> AddressSpace<'a> for &'a Flat {
     fn encoding(&self) -> Encoding {
         self.encoding
     }
@@ -79,11 +80,12 @@ impl AddressSpace for Flat {
         self.machine
     }
 
-    fn slice_from_vaddr(&self, vaddr: u64) -> Result<&[u8]> {
+    fn slice_from_vaddr(&self, vaddr: u64) -> Result<&'a [u8]> {
+        let flat: &'a Flat = self;
         vaddr
-            .checked_sub(self.base)
+            .checked_sub(flat.base)
             .and_then(|offset| usize::try_from(offset).ok())
-            .and_then(|offset| self.memory.get(offset..))
+            .and_then(|offset| flat.memory.get(offset..))
             .ok_or_else(|| Error::invalid_address(vaddr))
     }
 
@@ -91,12 +93,14 @@ impl AddressSpace for Flat {
         value.wrapping_sub(self.pointer_bias)
     }
 
-    fn dynamic_bytes(&self) -> Result<Option<&[u8]>> {
-        Ok(self.dynamic.as_deref())
+    fn dynamic_bytes(&self) -> Result<Option<&'a [u8]>> {
+        let flat: &'a Flat = self;
+        Ok(flat.dynamic.as_deref())
     }
 
-    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'_>>> {
-        let hdr = self
+    fn segments(&self, segment_type: SegmentType) -> Result<Vec<SegmentBytes<'a>>> {
+        let flat: &'a Flat = self;
+        let hdr = flat
             .eh_frame_hdr
             .as_ref()
             .filter(|_| segment_type == SegmentType::GNU_EH_FRAME);
@@ -115,8 +119,9 @@ impl AddressSpace for Flat {
             .collect())
     }
 
-    fn note_sources(&self) -> Result<Vec<NoteSource<'_>>> {
-        Ok(self
+    fn note_sources(&self) -> Result<Vec<NoteSource<'a>>> {
+        let flat: &'a Flat = self;
+        Ok(flat
             .notes
             .iter()
             .map(|(data, address)| NoteSource {
@@ -127,8 +132,9 @@ impl AddressSpace for Flat {
             .collect())
     }
 
-    fn table_section(&self, table: TableSection) -> Result<Option<SectionTable<'_>>> {
-        Ok(self
+    fn table_section(&self, table: TableSection) -> Result<Option<SectionTable<'a>>> {
+        let flat: &'a Flat = self;
+        Ok(flat
             .tables
             .iter()
             .find(|(kind, ..)| *kind == table)
@@ -155,8 +161,27 @@ fn len(bytes: &[u8]) -> u64 {
     u64::try_from(bytes.len()).unwrap()
 }
 
-fn names(symbols: &[NamedSymbol]) -> Vec<&str> {
-    symbols.iter().map(|symbol| symbol.name.as_str()).collect()
+fn names<'a>(symbols: &'a [NamedSymbol<'_>]) -> Vec<&'a str> {
+    symbols.iter().map(|symbol| &*symbol.name).collect()
+}
+
+/// The list accessors of `ElfFile` and `ElfImage`, on a [`Linker`].
+impl<'a> Linker<'a> {
+    fn exports(&self) -> Result<Vec<NamedSymbol<'a>>> {
+        self.symbol_list(symbols::is_export)
+    }
+
+    fn imports(&self) -> Result<Vec<NamedSymbol<'a>>> {
+        self.symbol_list(symbols::is_import)
+    }
+
+    fn all_symbols(&self) -> Result<Vec<NamedSymbol<'a>>> {
+        self.symbol_list(symbols::is_any)
+    }
+
+    fn version_tables(&self) -> Result<VersionTables> {
+        self.versions(&|| Ok(self.symbols()?.map(|table| table.len())))
+    }
 }
 
 fn structure(error: &Error) -> Option<&str> {
@@ -206,17 +231,17 @@ fn elf32_symbols_with_sysv_hash() {
     let soname = linker.string_entry(DynamicTag::SONAME).unwrap();
     assert_eq!(soname.as_deref(), Some("libtest.so"));
     assert_eq!(linker.string_entry(DynamicTag::RUNPATH).unwrap(), None);
-    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
-    assert_eq!(linker.sysv_hash().unwrap(), Some(&hash));
+    assert_eq!(linker.symbols().unwrap().as_ref(), Some(&symbols));
+    assert_eq!(linker.sysv_hash().unwrap().as_ref(), Some(&hash));
     assert_eq!(linker.gnu_hash().unwrap(), None);
     let found = linker.lookup("bar").unwrap().unwrap();
-    assert_eq!((found.index, found.name.as_str()), (2, "bar"));
+    assert_eq!((found.index, &*found.name), (2, "bar"));
     assert_eq!((found.version, found.hidden), (None, false));
     assert_eq!(linker.lookup("missing").unwrap(), None);
     assert_eq!(names(&linker.exports().unwrap()), ["foo"]);
     assert_eq!(names(&linker.imports().unwrap()), ["bar"]);
     assert_eq!(
-        names(&linker.symbol_list().unwrap()),
+        names(&linker.all_symbols().unwrap()),
         ["foo", "bar", "hidden"]
     );
 }
@@ -269,7 +294,7 @@ fn elf64_symbol_count_from_gnu_hash_and_relocations() {
     ]);
 
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
+    assert_eq!(linker.symbols().unwrap().as_ref(), Some(&symbols));
     let relocations = linker.relocations().unwrap();
     assert_eq!(relocations.rela, Some(rela));
     assert_eq!(
@@ -302,16 +327,17 @@ fn symbol_count_from_string_table_distance() {
         (DynamicTag::SYMENT, 24),
     ]);
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
+    assert_eq!(linker.symbols().unwrap().as_ref(), Some(&symbols));
     // A linear search finds the symbol without a hash table.
     let found = linker.lookup("abc").unwrap().unwrap();
     assert_eq!(found.index, 1);
 
     // The string table before the symbol table gives no count.
+    drop((linker, found));
     flat.set_dynamic(&[(DynamicTag::SYMTAB, strtab), (DynamicTag::STRTAB, symtab)]);
     let linker = Linker::load(&flat).unwrap();
     assert_eq!(linker.symbols().unwrap(), None);
-    assert_eq!(linker.symbol_list().unwrap(), Vec::<NamedSymbol>::new());
+    assert_eq!(linker.all_symbols().unwrap(), Vec::<NamedSymbol<'_>>::new());
 }
 
 #[test]
@@ -342,10 +368,11 @@ fn mips_symbol_count_from_symtabno() {
         (DynamicTag::MIPS_SYMTABNO, 3),
     ]);
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.symbols().unwrap(), Some(&symbols));
-    assert_eq!(names(&linker.symbol_list().unwrap()), ["foo", "bar"]);
+    assert_eq!(linker.symbols().unwrap().as_ref(), Some(&symbols));
+    assert_eq!(names(&linker.all_symbols().unwrap()), ["foo", "bar"]);
 
     // On other machines, the tag value is not a symbol count. The hash table gives it.
+    drop(linker);
     flat.machine = Machine::PPC;
     let linker = Linker::load(&flat).unwrap();
     let table = linker.symbols().unwrap().unwrap();
@@ -382,7 +409,7 @@ fn dynamic_section_indices_through_symtab_shndx() {
         (DynamicTag::SYMTAB_SHNDX, shndx),
     ]);
     let linker = Linker::load(&flat).unwrap();
-    let list = linker.symbol_list().unwrap();
+    let list = linker.all_symbols().unwrap();
     let sections: Vec<Option<u32>> = list.iter().map(|symbol| symbol.section_index).collect();
     assert_eq!(names(&list), names_list);
     assert_eq!(sections, [Some(0x1_0005), Some(u32::from(SHN_ABS)), None]);
@@ -390,6 +417,7 @@ fn dynamic_section_indices_through_symtab_shndx() {
     assert_eq!(found.section_index, Some(0x1_0005));
 
     // Without DT_SYMTAB_SHNDX, the extended index is unknown.
+    drop((linker, list, found));
     flat.set_dynamic(&[(DynamicTag::STRTAB, strtab), (DynamicTag::SYMTAB, symtab)]);
     let linker = Linker::load(&flat).unwrap();
     assert_eq!(linker.lookup("big").unwrap().unwrap().section_index, None);
@@ -460,16 +488,16 @@ fn versions_through_the_dynamic_table() {
     ]);
 
     let linker = Linker::load(&flat).unwrap();
-    let (tables, _) = linker.versions().unwrap();
+    let tables = linker.version_tables().unwrap();
     assert_eq!(tables.versym, Some(versym));
     assert_eq!(tables.definitions, Some(definitions));
     assert_eq!(tables.requirements, Some(requirements));
-    let list = linker.symbol_list().unwrap();
+    let list = linker.all_symbols().unwrap();
     let versions: Vec<_> = list
         .iter()
         .map(|symbol| {
             (
-                symbol.name.as_str(),
+                &*symbol.name,
                 symbol.version.as_deref(),
                 symbol.version_file.as_deref(),
                 symbol.hidden,
@@ -496,18 +524,15 @@ fn missing_tables_give_empty_results() {
     assert_eq!(linker.string_entry(DynamicTag::SONAME).unwrap(), None);
     assert_eq!(linker.strings().unwrap(), None);
     assert_eq!(linker.symbols().unwrap(), None);
-    assert_eq!(
-        linker.relocations().unwrap(),
-        &DynamicRelocations::default()
-    );
-    assert_eq!(linker.versions().unwrap().0, VersionTables::default());
+    assert_eq!(linker.relocations().unwrap(), DynamicRelocations::default());
+    assert_eq!(linker.version_tables().unwrap(), VersionTables::default());
     assert_eq!(linker.lookup("foo").unwrap(), None);
     let empty: Vec<u64> = Vec::new();
     let init = linker.array(DynamicTag::INIT_ARRAY, DynamicTag::INIT_ARRAYSZ);
     assert_eq!(init.unwrap(), empty);
-    assert_eq!(notes(&flat).unwrap(), Vec::<Note>::new());
-    assert_eq!(build_id(&flat).unwrap(), None);
-    assert!(eh_frame_hdr(&flat).unwrap().is_none());
+    assert_eq!(notes(&&flat).unwrap(), Vec::<Note>::new());
+    assert_eq!(build_id(&&flat).unwrap(), None);
+    assert!(eh_frame_hdr(&&flat).unwrap().is_none());
 }
 
 #[test]
@@ -639,6 +664,7 @@ fn malformed_hash_tables_have_context() {
         Some("DT_GNU_HASH")
     );
     assert_eq!(structure(&linker.sysv_hash().unwrap_err()), Some("DT_HASH"));
+    drop(linker);
 
     // An address outside the memory is an `InvalidAddress` error.
     flat.set_dynamic(&[(DynamicTag::STRTAB, 0x10), (DynamicTag::NEEDED, 1)]);
@@ -661,13 +687,13 @@ fn notes_and_build_id() {
         (first.write(encoding, 4).unwrap(), 0x100),
         (second.write(encoding, 4).unwrap(), 0x200),
     ];
-    let all = notes(&flat).unwrap();
+    let all = notes(&&flat).unwrap();
     assert_eq!(all.len(), 2);
     assert_eq!(all[0], first.notes[0]);
-    assert_eq!(build_id(&flat).unwrap(), Some(vec![1, 2, 3, 4]));
+    assert_eq!(build_id(&&flat).unwrap(), Some(vec![1, 2, 3, 4]));
 
     flat.notes.push((vec![1, 0, 0], 0x300));
-    let error = notes(&flat).unwrap_err();
+    let error = notes(&&flat).unwrap_err();
     assert_eq!(error.context().unwrap().address, Some(0x300));
 }
 
@@ -737,7 +763,7 @@ fn plt_relocations_follow_dt_pltrel() {
             (table_tag, address),
             (size_tag, len(&bytes)),
         ]);
-        let relocations = Linker::load(&flat).unwrap().into_relocations().unwrap();
+        let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
         assert_eq!(relocations.plt.as_ref(), Some(&table));
         let other = if with_addend {
             relocations.rela
@@ -752,7 +778,7 @@ fn plt_relocations_follow_dt_pltrel() {
 fn zero_size_tables_do_not_read_memory() {
     let mut flat = Flat::new(Encoding::ELF64_LE, Machine::X86_64);
     flat.set_dynamic(&[(DynamicTag::RELA, 0x10), (DynamicTag::RELASZ, 0)]);
-    let relocations = Linker::load(&flat).unwrap().into_relocations().unwrap();
+    let relocations = Linker::load(&flat).unwrap().relocations().unwrap();
     assert_eq!(relocations.rela, Some(RelocationTable::new(true)));
 }
 
@@ -784,7 +810,7 @@ fn versym_size_comes_from_the_symbol_count() {
     flat.set_dynamic(&[(DynamicTag::VERSYM, versym)]);
     // Without a symbol table, the size of the table is unknown.
     let linker = Linker::load(&flat).unwrap();
-    assert_eq!(linker.versions().unwrap().0.versym, None);
+    assert_eq!(linker.version_tables().unwrap().versym, None);
     let with_count = |count: u64| {
         [
             (DynamicTag::VERSYM, versym),
@@ -792,15 +818,20 @@ fn versym_size_comes_from_the_symbol_count() {
             (DynamicTag::MIPS_SYMTABNO, count),
         ]
     };
+    drop(linker);
     flat.set_dynamic(&with_count(2));
     assert_eq!(
-        Linker::load(&flat).unwrap().into_versions().unwrap().versym,
+        Linker::load(&flat)
+            .unwrap()
+            .version_tables()
+            .unwrap()
+            .versym,
         Some(VersymTable {
             entries: vec![1, 2]
         })
     );
     flat.set_dynamic(&with_count(3));
-    let error = Linker::load(&flat).unwrap().into_versions().unwrap_err();
+    let error = Linker::load(&flat).unwrap().version_tables().unwrap_err();
     assert!(
         matches!(error.kind(), ErrorKind::InvalidTable(_)),
         "{error}"
@@ -844,14 +875,14 @@ fn eh_frame_hdr_comes_from_the_segment() {
     let bytes = hdr.write(encoding, address).unwrap();
     let mut flat = Flat::new(encoding, Machine::PPC);
     flat.eh_frame_hdr = Some((address, bytes.clone()));
-    let parsed = eh_frame_hdr(&flat).unwrap().unwrap();
+    let parsed = eh_frame_hdr(&&flat).unwrap().unwrap();
     assert_eq!(parsed.eh_frame_ptr, 0x3000);
     assert_eq!(parsed.find_fde(0x1004), Some(0x3010));
 
     let mut unsupported = bytes;
     unsupported[0] = 2;
     flat.eh_frame_hdr = Some((address, unsupported));
-    let error = eh_frame_hdr(&flat).unwrap_err();
+    let error = eh_frame_hdr(&&flat).unwrap_err();
     assert!(
         matches!(error.kind(), ErrorKind::InvalidTable(_)),
         "{error}"

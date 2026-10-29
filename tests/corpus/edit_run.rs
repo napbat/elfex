@@ -133,7 +133,7 @@ fn check_program(path: &Path, target: &Target, work: &Path) -> Option<Findings> 
     let interpreter = interpreter_link(&file, target, work, &name);
     let mut findings = Findings::default();
     for edit in EDITS {
-        let mut edited = file.clone();
+        let mut edited = file.clone().into_owned();
         let applied = if edit == "all-edits" {
             EDITS[..EDITS.len() - 1]
                 .iter()
@@ -162,7 +162,12 @@ fn check_program(path: &Path, target: &Target, work: &Path) -> Option<Findings> 
 
 /// Make a symbolic link to the real interpreter of `file` at a longer path, and return the
 /// path of the link. Return `None` if the program has no interpreter.
-fn interpreter_link(file: &ElfFile, target: &Target, work: &Path, name: &str) -> Option<String> {
+fn interpreter_link(
+    file: &ElfFile<&[u8]>,
+    target: &Target,
+    work: &Path,
+    name: &str,
+) -> Option<String> {
     let interpreter = file.interpreter().ok()??;
     let real = match target.emulator {
         Some((_, sysroot)) => {

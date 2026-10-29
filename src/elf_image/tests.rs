@@ -18,6 +18,7 @@ use crate::{Error, Result};
 use core::cell::Cell;
 use core::ops::Range;
 
+mod borrow;
 mod edges;
 mod source;
 
@@ -216,10 +217,10 @@ fn parses_raw_files() {
         assert_eq!(image.load_bias(), None);
         assert_eq!(image.segments.len(), 4);
         assert_eq!(image.program_headers().len(), 4);
-        assert_eq!(image.segments[0].data, []);
-        assert_eq!(image.segments[1].data, []);
-        assert_eq!(image.segments[2].data, bytes[..0x200]);
-        assert_eq!(image.segments[3].data, bytes[0x200..]);
+        assert_eq!(*image.segments[0].data, []);
+        assert_eq!(*image.segments[1].data, []);
+        assert_eq!(*image.segments[2].data, bytes[..0x200]);
+        assert_eq!(*image.segments[3].data, bytes[0x200..]);
         assert_eq!(image.segments[3].memory_size(), 0x200);
         assert_eq!(image.load_segments().count(), 2);
         assert!(
@@ -256,16 +257,16 @@ fn makes_mapped_image_with_zero_fill() {
 #[test]
 fn parses_mapped_image() {
     for encoding in [Encoding::ELF64_LE, Encoding::ELF32_BE] {
-        let file = ElfImage::parse(&sample(encoding)).unwrap();
+        let file = ElfImage::parse(&sample(encoding)).unwrap().into_owned();
         let mapped = file.to_mapped_image().unwrap();
         let image = ElfImage::parse_mapped(&mapped).unwrap();
         assert_eq!(image.source_layout(), SourceLayout::Mapped);
         assert_eq!(image.header, file.header);
         assert!(image.program_headers().eq(file.program_headers()));
-        assert_eq!(image.segments[0].data, []);
-        assert_eq!(image.segments[1].data, []);
-        assert_eq!(image.segments[2].data, mapped[..0x200]);
-        assert_eq!(image.segments[3].data, mapped[0x1200..]);
+        assert_eq!(*image.segments[0].data, []);
+        assert_eq!(*image.segments[1].data, []);
+        assert_eq!(*image.segments[2].data, mapped[..0x200]);
+        assert_eq!(*image.segments[3].data, mapped[0x1200..]);
         assert_eq!(image.to_mapped_image().unwrap(), mapped);
         assert_eq!(image.interpreter().unwrap(), file.interpreter().unwrap());
         for vaddr in [BASE, BASE + 0x1200] {
@@ -339,17 +340,21 @@ fn build_clears_section_fields_and_checks_counts() {
         header.shstrndx = 0;
     });
     let image = ElfImage::parse(&bytes).unwrap();
-    let rebuilt = ElfImage::parse(&image.try_build().unwrap()).unwrap();
+    let rebuilt = ElfImage::parse(&image.try_build().unwrap())
+        .unwrap()
+        .into_owned();
     assert_eq!(rebuilt.header.shoff, 0);
     assert_eq!(rebuilt.header.shnum, 0);
 
-    let mut image = ElfImage::parse(&sample(Encoding::ELF64_LE)).unwrap();
+    let mut image = ElfImage::parse(&sample(Encoding::ELF64_LE))
+        .unwrap()
+        .into_owned();
     let note = Segment {
         header: ProgramHeader {
             segment_type: SegmentType::NOTE,
             ..image.segments[0].header
         },
-        data: Vec::new(),
+        data: Vec::new().into(),
     };
     image.segments.resize(0xffff, note);
     assert!(matches!(
@@ -359,7 +364,7 @@ fn build_clears_section_fields_and_checks_counts() {
 }
 
 /// Read `data` with `options` from a [`TestReader`] with a known size.
-fn read_sized(data: &[u8], options: ParseOptions) -> Result<ElfImage> {
+fn read_sized(data: &[u8], options: ParseOptions) -> Result<ElfImage<'_>> {
     ElfImage::read_from_with_options(&TestReader::sized(data), 0, options)
 }
 
@@ -401,7 +406,7 @@ fn truncated_mapped_image() {
         .unwrap();
     // The source ends after `p_filesz`: the segment keeps the bytes that the source has.
     let image = read_sized(&mapped[..0x1300], ParseOptions::mapped()).unwrap();
-    assert_eq!(image.segments[3].data, mapped[0x1200..0x1300]);
+    assert_eq!(*image.segments[3].data, mapped[0x1200..0x1300]);
     assert_eq!(image.read_vaddr(BASE + 0x13f0, 0x10).unwrap(), [0; 0x10]);
 
     // The source ends before `p_filesz`.
@@ -415,10 +420,12 @@ fn truncated_mapped_image() {
 
 #[test]
 fn missing_page_reads_as_zeros() {
-    let mut image = ElfImage::parse(&sample(Encoding::ELF64_LE)).unwrap();
+    let mut image = ElfImage::parse(&sample(Encoding::ELF64_LE))
+        .unwrap()
+        .into_owned();
     image.segments[2].header.filesz = 0x3000;
     image.segments[2].header.memsz = 0x3000;
-    image.segments[2].data.resize(0x3000, 0x77);
+    image.segments[2].data.to_mut().resize(0x3000, 0x77);
     image.segments[3].header.offset = 0x3200;
     image.segments[3].header.vaddr = BASE + 0x3200;
     // Build a raw file first, so that the mapped headers describe the changed segments.
@@ -434,7 +441,7 @@ fn missing_page_reads_as_zeros() {
     assert_eq!(data[..0x1800], mapped[..0x1800]);
     assert!(all_zero(&data[0x1800..0x2000]));
     assert_eq!(data[0x2000..], mapped[0x2000..0x3000]);
-    assert_eq!(parsed.segments[3].data, mapped[0x3200..]);
+    assert_eq!(*parsed.segments[3].data, mapped[0x3200..]);
 }
 
 #[test]
@@ -451,12 +458,12 @@ fn unsized_mapped_source_reads_large_segment_in_chunks() {
     let reader = TestReader::unknown_size(&mapped);
     let image = ElfImage::read_from_with_options(&reader, 0, ParseOptions::mapped()).unwrap();
     // The source ends after `p_filesz`: the segment keeps the bytes that the source has.
-    assert_eq!(image.segments[3].data, mapped[0x1200..]);
+    assert_eq!(*image.segments[3].data, mapped[0x1200..]);
     assert!(reader.largest.get() <= 0x1_0000, "{}", reader.largest.get());
 
     let options = ParseOptions::mapped().allow_missing_segment_data();
     let image = ElfImage::read_from_with_options(&reader, 0, options).unwrap();
-    assert_eq!(image.segments[3].data, mapped[0x1200..]);
+    assert_eq!(*image.segments[3].data, mapped[0x1200..]);
     assert!(reader.largest.get() <= 0x1_0000, "{}", reader.largest.get());
 }
 
@@ -490,14 +497,16 @@ fn non_load_segment_outside_loads_keeps_data() {
         };
     });
     let image = ElfImage::parse(&bytes).unwrap();
-    assert_eq!(image.segments[0].data, bytes[0x230..]);
-    assert_eq!(image.segments[3].data, bytes[0x200..0x220]);
+    assert_eq!(*image.segments[0].data, bytes[0x230..]);
+    assert_eq!(*image.segments[3].data, bytes[0x200..0x220]);
     let rebuilt = image.try_build().unwrap();
     assert_eq!(rebuilt[0x230..], bytes[0x230..]);
     assert!(all_zero(&rebuilt[0x220..0x230]));
 
-    let mapped = ElfImage::parse_mapped(&image.to_mapped_image().unwrap()).unwrap();
-    assert_eq!(mapped.segments[0].data, []);
+    let mapped = ElfImage::parse_mapped(&image.to_mapped_image().unwrap())
+        .unwrap()
+        .into_owned();
+    assert_eq!(*mapped.segments[0].data, []);
 }
 
 #[test]
@@ -658,7 +667,9 @@ fn core_file_notes() {
     }
 
     // A file without core notes gives `None`.
-    let image = ElfImage::parse(&sample(Encoding::ELF64_LE)).unwrap();
+    let image = ElfImage::parse(&sample(Encoding::ELF64_LE))
+        .unwrap()
+        .into_owned();
     assert_eq!(image.core_file_mappings().unwrap(), None);
     assert_eq!(image.auxv().unwrap(), None);
 }

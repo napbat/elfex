@@ -4,7 +4,8 @@
 //! by its byte offset in the table (for example `st_name`, `sh_name` and `DT_NEEDED`). Offset 0
 //! is the empty string in a well-formed table.
 //!
-//! Use [`StringTable`] to read strings, and [`StringTableBuilder`] to make a new table.
+//! Use [`StringTable`] to read strings, and [`StringTableBuilder`] to make a new table. A
+//! [`StringTable`] borrows its bytes, so it does not copy the table of a file.
 //!
 //! # Examples
 //!
@@ -17,7 +18,7 @@
 //! let bar = builder.add("bar")?;
 //! assert_eq!(bar, foobar + 3);
 //!
-//! let table = StringTable::parse(&builder.into_bytes());
+//! let table = builder.table();
 //! assert_eq!(table.get(foobar)?, "foobar");
 //! assert_eq!(table.get(bar)?, "bar");
 //! assert_eq!(table.get(0)?, "");
@@ -28,32 +29,27 @@ use crate::prelude::*;
 use crate::{Error, Result};
 use core::ops::Bound;
 
-/// A parsed string table (`SHT_STRTAB` section data or the `DT_STRTAB` data).
+/// A string table (`SHT_STRTAB` section data or the `DT_STRTAB` data).
 ///
-/// The table keeps a copy of the bytes. Each lookup checks the offset and the NUL terminator,
-/// so the bytes can come from an untrusted file.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StringTable {
-    data: Vec<u8>,
+/// The table borrows its bytes. Each lookup checks the offset and the NUL terminator, so the
+/// bytes can come from an untrusted file. The strings that a lookup returns borrow the bytes,
+/// not the table. Use [`StringTableBuilder::table`] to read the strings of a new table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct StringTable<'a> {
+    data: &'a [u8],
 }
 
-impl StringTable {
-    /// Create a string table that owns `data`.
+impl<'a> StringTable<'a> {
+    /// Make a string table of `bytes`. The method does not copy the bytes.
     #[must_use]
-    pub const fn new(data: Vec<u8>) -> Self {
-        Self { data }
-    }
-
-    /// Parse a string table from a copy of `bytes`.
-    #[must_use]
-    pub fn parse(bytes: &[u8]) -> Self {
-        Self::new(bytes.to_vec())
+    pub const fn parse(bytes: &'a [u8]) -> Self {
+        Self { data: bytes }
     }
 
     /// Return the raw bytes of the table.
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.data
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.data
     }
 
     /// Return the size of the table in bytes.
@@ -74,7 +70,7 @@ impl StringTable {
     ///
     /// Return [`ErrorKind::InvalidTable`](crate::ErrorKind::InvalidTable) if `offset` is not
     /// in the table, or if no NUL terminator follows `offset`.
-    pub fn get_bytes(&self, offset: u32) -> Result<&[u8]> {
+    pub fn get_bytes(&self, offset: u32) -> Result<&'a [u8]> {
         let rest = usize::try_from(offset)
             .ok()
             .and_then(|start| self.data.get(start..))
@@ -85,8 +81,7 @@ impl StringTable {
                 ))
                 .at_offset(u64::from(offset))
             })?;
-        rest.iter()
-            .position(|&byte| byte == 0)
+        nul_position(rest)
             .and_then(|len| rest.get(..len))
             .ok_or_else(|| {
                 Error::invalid_table(format!(
@@ -104,7 +99,7 @@ impl StringTable {
     ///   not in the table, or if no NUL terminator follows `offset`.
     /// - Return [`ErrorKind::InvalidUtf8`](crate::ErrorKind::InvalidUtf8) if the string is not
     ///   valid UTF-8.
-    pub fn get(&self, offset: u32) -> Result<&str> {
+    pub fn get(&self, offset: u32) -> Result<&'a str> {
         let bytes = self.get_bytes(offset)?;
         core::str::from_utf8(bytes).map_err(|_| Error::invalid_utf8().at_offset(u64::from(offset)))
     }
@@ -115,7 +110,7 @@ impl StringTable {
     ///
     /// Return [`ErrorKind::InvalidTable`](crate::ErrorKind::InvalidTable) if `offset` is not
     /// in the table, or if no NUL terminator follows `offset`.
-    pub fn get_lossy(&self, offset: u32) -> Result<Cow<'_, str>> {
+    pub fn get_lossy(&self, offset: u32) -> Result<Cow<'a, str>> {
         self.get_bytes(offset).map(String::from_utf8_lossy)
     }
 
@@ -125,15 +120,24 @@ impl StringTable {
     /// iterator starts at offset 0. It stops at the first string that has no NUL terminator,
     /// or at an offset that does not fit in 32 bits.
     #[must_use]
-    pub fn iter(&self) -> StringTableIter<'_> {
+    pub fn iter(&self) -> StringTableIter<'a> {
         StringTableIter {
-            data: &self.data,
+            data: self.data,
             pos: 0,
         }
     }
 }
 
-impl<'a> IntoIterator for &'a StringTable {
+impl<'a> IntoIterator for &StringTable<'a> {
+    type Item = (u32, &'a [u8]);
+    type IntoIter = StringTableIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for StringTable<'a> {
     type Item = (u32, &'a [u8]);
     type IntoIter = StringTableIter<'a>;
 
@@ -168,7 +172,7 @@ impl<'a> StringTableIter<'a> {
     /// Read the string at the current position and move after its NUL terminator.
     fn next_string(&mut self) -> Option<(u32, &'a [u8])> {
         let rest = self.data.get(self.pos..)?;
-        let len = rest.iter().position(|&byte| byte == 0)?;
+        let len = nul_position(rest)?;
         let offset = u32::try_from(self.pos).ok()?;
         let bytes = rest.get(..len)?;
         self.pos = self.pos.checked_add(len)?.checked_add(1)?;
@@ -260,6 +264,12 @@ impl StringTableBuilder {
         &self.data
     }
 
+    /// Return a [`StringTable`] that reads the strings of the builder.
+    #[must_use]
+    pub fn table(&self) -> StringTable<'_> {
+        StringTable::parse(&self.data)
+    }
+
     /// Return the bytes of the table and consume the builder.
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
@@ -283,6 +293,29 @@ impl Default for StringTableBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Return the position of the first NUL byte in `bytes`.
+///
+/// The function tests 8 bytes at a time, because symbol names are long and each name lookup
+/// searches for the NUL terminator.
+fn nul_position(bytes: &[u8]) -> Option<usize> {
+    const LOW: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let (chunks, _) = bytes.as_chunks::<8>();
+    let mut start = 0;
+    for chunk in chunks {
+        let word = u64::from_le_bytes(*chunk);
+        // The expression is not zero if and only if a byte of `word` is zero.
+        if word.wrapping_sub(LOW) & !word & HIGH != 0 {
+            break;
+        }
+        start += 8;
+    }
+    let tail = bytes.get(start..)?;
+    tail.iter()
+        .position(|&byte| byte == 0)
+        .map(|position| start + position)
 }
 
 /// Convert a byte position in the table to a 32-bit string offset.
@@ -336,7 +369,7 @@ mod tests {
 
     #[test]
     fn get_reports_invalid_utf8() {
-        let table = StringTable::new(vec![0, b'a', 0xff, 0]);
+        let table = StringTable::parse(&[0, b'a', 0xff, 0]);
         let err = table.get(1).unwrap_err();
         assert!(matches!(err.kind(), ErrorKind::InvalidUtf8));
         assert_eq!(table.get_lossy(1).unwrap(), "a\u{fffd}");
@@ -394,7 +427,7 @@ mod tests {
         let bytes = builder.into_bytes();
         assert_eq!(bytes, b"\0foobar\0xfoobar\0ba\0");
 
-        let table = StringTable::new(bytes);
+        let table = StringTable::parse(&bytes);
         assert_eq!(table.get(4).unwrap(), "bar");
         assert_eq!(table.get(6).unwrap(), "r");
         assert_eq!(table.get(16).unwrap(), "ba");
@@ -406,5 +439,26 @@ mod tests {
         let err = builder.add(b"a\0b").unwrap_err();
         assert!(matches!(err.kind(), ErrorKind::InvalidTable(_)));
         assert_eq!(builder.as_bytes(), b"\0");
+        assert_eq!(builder.table().get(0).unwrap(), "");
+    }
+
+    #[test]
+    fn nul_position_finds_the_first_nul_at_each_position() {
+        for len in 0..20 {
+            // Bytes with the high bit set must not look like a NUL byte.
+            let mut bytes = vec![0x80; len];
+            assert_eq!(nul_position(&bytes), None);
+            for position in 0..len {
+                bytes[position] = 0;
+                assert_eq!(nul_position(&bytes), Some(position), "{len} {position}");
+                bytes.fill(0x01);
+                bytes[position] = 0;
+                if let Some(next) = bytes.get_mut(position + 1) {
+                    *next = 0;
+                }
+                assert_eq!(nul_position(&bytes), Some(position), "{len} {position}");
+                bytes.fill(0x80);
+            }
+        }
     }
 }

@@ -11,7 +11,7 @@ use crate::reference::{self, Reference, array, number};
 use crate::report::{DYNAMIC, Findings, HEADER, SECTIONS, SEGMENTS};
 
 /// Compare all items of `file` with `reference`.
-pub fn compare(file: &ElfFile, reference: &Reference, findings: &mut Findings) {
+pub fn compare(file: &ElfFile<&[u8]>, reference: &Reference, findings: &mut Findings) {
     let json = &reference.json;
     header(file, json, findings);
     sections(file, json, findings);
@@ -44,7 +44,7 @@ fn numbers(
 }
 
 /// Compare the file header (`ElfHeader`).
-fn header(file: &ElfFile, json: &Value, findings: &mut Findings) {
+fn header(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     let Some(item) = reference::get(json, &["ElfHeader"]) else {
         findings.fail(HEADER, "the reference has no ElfHeader");
         return;
@@ -94,7 +94,7 @@ fn header(file: &ElfFile, json: &Value, findings: &mut Findings) {
 }
 
 /// Compare the section headers and the section names.
-fn sections(file: &ElfFile, json: &Value, findings: &mut Findings) {
+fn sections(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     let items = array(json, &["Sections"]);
     let headers = file.section_headers();
     findings.check(SECTIONS, "section count", items.len(), headers.len());
@@ -131,7 +131,7 @@ fn sections(file: &ElfFile, json: &Value, findings: &mut Findings) {
 }
 
 /// Compare the program headers.
-fn segments(file: &ElfFile, json: &Value, findings: &mut Findings) {
+fn segments(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     let items = array(json, &["ProgramHeaders"]);
     let headers = file.program_headers();
     findings.check(SEGMENTS, "program header count", items.len(), headers.len());
@@ -156,7 +156,7 @@ fn segments(file: &ElfFile, json: &Value, findings: &mut Findings) {
 }
 
 /// Compare the dynamic table, the needed libraries, the soname and the run paths.
-fn dynamic(file: &ElfFile, json: &Value, findings: &mut Findings) {
+fn dynamic(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     let items = array(json, &["DynamicSection"]);
     let reference: Vec<(u64, u64)> = items
         .iter()

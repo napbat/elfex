@@ -110,7 +110,7 @@ fn removes_a_section_below_an_extended_name_table_index() {
     elf.header_mut().shstrndx = SHN_XINDEX;
 
     elf.remove_section(5).unwrap();
-    let parsed = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+    let parsed = ElfFile::from_vec(elf.try_build().unwrap()).unwrap();
     let count = parsed.section_headers().len();
     assert_eq!(count, index);
     assert_eq!(
@@ -165,7 +165,7 @@ fn moves_a_program_table_that_cannot_grow() {
             usize::from(elf.header().phentsize),
             ProgramHeader::size(elf.encoding().class)
         );
-        let parsed = ElfFile::parse(&elf.try_build().unwrap()).unwrap();
+        let parsed = ElfFile::from_vec(elf.try_build().unwrap()).unwrap();
         assert_eq!(parsed.read_vaddr(vaddr, 1).unwrap(), [2]);
     }
 }

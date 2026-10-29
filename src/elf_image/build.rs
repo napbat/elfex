@@ -22,7 +22,7 @@ struct Placement<'a> {
     bytes: &'a [u8],
 }
 
-impl ElfImage {
+impl ElfImage<'_> {
     /// Make a loader-mapped image: the memory from the image origin to the end of the highest
     /// `PT_LOAD` memory range.
     ///

@@ -6,7 +6,7 @@ use elfex::section::{SHN_ABS, SHN_COMMON, SHN_UNDEF};
 use elfex::{ElfFile, NamedSymbol, Relocation, SectionType};
 use std::io::Write;
 
-fn section_text(symbol: &NamedSymbol) -> String {
+fn section_text(symbol: &NamedSymbol<'_>) -> String {
     match symbol.symbol.shndx {
         SHN_UNDEF => "UND".to_owned(),
         SHN_ABS => "ABS".to_owned(),
@@ -17,12 +17,12 @@ fn section_text(symbol: &NamedSymbol) -> String {
     }
 }
 
-fn symbol_name(symbol: &NamedSymbol) -> String {
+fn symbol_name(symbol: &NamedSymbol<'_>) -> String {
     match (&symbol.version, &symbol.version_file) {
         (Some(version), Some(file)) => format!("{}@{version} ({file})", symbol.name),
         (Some(version), None) if symbol.hidden => format!("{}@{version}", symbol.name),
         (Some(version), None) => format!("{}@@{version}", symbol.name),
-        (None, _) => symbol.name.clone(),
+        (None, _) => symbol.name.to_string(),
     }
 }
 
@@ -30,7 +30,7 @@ fn print_symbol_list(
     file: &ElfFile,
     out: &mut dyn Write,
     title: &str,
-    symbols: &[NamedSymbol],
+    symbols: &[NamedSymbol<'_>],
 ) -> Result<(), Failure> {
     let width = address_width(file);
     writeln!(out, "{title} ({} entries):", symbols.len())?;
@@ -85,7 +85,7 @@ pub fn print_symbols(file: &ElfFile, out: &mut dyn Write) -> Result<(), Failure>
 }
 
 /// Return the symbols of the symbol table section `index`, with names.
-fn symbols_of(file: &ElfFile, index: Option<usize>) -> elfex::Result<Vec<NamedSymbol>> {
+fn symbols_of(file: &ElfFile, index: Option<usize>) -> elfex::Result<Vec<NamedSymbol<'_>>> {
     let section_type = index
         .and_then(|index| file.section_headers().get(index))
         .map(|header| header.section_type);
@@ -96,7 +96,7 @@ fn symbols_of(file: &ElfFile, index: Option<usize>) -> elfex::Result<Vec<NamedSy
     }
 }
 
-fn relocation_line(file: &ElfFile, relocation: &Relocation, symbols: &[NamedSymbol]) -> String {
+fn relocation_line(file: &ElfFile, relocation: &Relocation, symbols: &[NamedSymbol<'_>]) -> String {
     let width = address_width(file);
     let kind = relocation
         .type_name(file.machine())

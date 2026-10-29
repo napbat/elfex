@@ -309,7 +309,7 @@ impl DynamicTable {
     /// # Errors
     ///
     /// Return an error if an offset is not in `strings` or a name is not valid UTF-8.
-    pub fn needed<'a>(&self, strings: &'a StringTable) -> Result<Vec<&'a str>> {
+    pub fn needed<'a>(&self, strings: &StringTable<'a>) -> Result<Vec<&'a str>> {
         self.get_all(DynamicTag::NEEDED)
             .map(|offset| string_at(strings, offset))
             .collect()
@@ -320,7 +320,7 @@ impl DynamicTable {
     /// # Errors
     ///
     /// Return an error if the offset is not in `strings` or the name is not valid UTF-8.
-    pub fn soname<'a>(&self, strings: &'a StringTable) -> Result<Option<&'a str>> {
+    pub fn soname<'a>(&self, strings: &StringTable<'a>) -> Result<Option<&'a str>> {
         self.soname_offset()
             .map(|o| string_at(strings, o))
             .transpose()
@@ -331,7 +331,7 @@ impl DynamicTable {
     /// # Errors
     ///
     /// Return an error if the offset is not in `strings` or the path is not valid UTF-8.
-    pub fn rpath<'a>(&self, strings: &'a StringTable) -> Result<Option<&'a str>> {
+    pub fn rpath<'a>(&self, strings: &StringTable<'a>) -> Result<Option<&'a str>> {
         self.rpath_offset()
             .map(|o| string_at(strings, o))
             .transpose()
@@ -342,7 +342,7 @@ impl DynamicTable {
     /// # Errors
     ///
     /// Return an error if the offset is not in `strings` or the path is not valid UTF-8.
-    pub fn runpath<'a>(&self, strings: &'a StringTable) -> Result<Option<&'a str>> {
+    pub fn runpath<'a>(&self, strings: &StringTable<'a>) -> Result<Option<&'a str>> {
         self.runpath_offset()
             .map(|o| string_at(strings, o))
             .transpose()
@@ -401,7 +401,7 @@ impl DynamicTable {
 }
 
 /// Get the string at a 64-bit offset in `strings`.
-fn string_at(strings: &StringTable, offset: u64) -> Result<&str> {
+fn string_at<'a>(strings: &StringTable<'a>, offset: u64) -> Result<&'a str> {
     let offset = u32::try_from(offset)
         .map_err(|_| Error::invalid_table("dynamic string offset does not fit in 32 bits"))?;
     strings.get(offset)

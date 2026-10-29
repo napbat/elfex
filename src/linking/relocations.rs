@@ -1,10 +1,10 @@
 //! Read the dynamic relocations and the symbol hash tables.
 
-use super::{DynamicRelocations, Linker, cached};
+use super::{DynamicRelocations, Linker};
 use crate::dynamic::DynamicTag;
 use crate::hash::{GnuHashTable, SysvHashTable, sysv_hash_entry_size};
 use crate::prelude::*;
-use crate::reloc::{Relocation, RelocationTable, RelrTable};
+use crate::reloc::{Relocation, RelocationTable, RelrTable, max_relocation_symbol};
 use crate::{Error, Result};
 
 /// The dynamic tags of a `Rel` or `Rela` relocation table.
@@ -19,42 +19,93 @@ struct RelocationTags {
     with_addend: bool,
 }
 
-impl Linker<'_> {
-    /// Return the relocation tables that the dynamic table names.
-    pub(crate) fn relocations(&self) -> Result<&DynamicRelocations> {
-        cached(&self.cache.relocations, || self.load_relocations())
-    }
+/// The tags of the `DT_RELA` table.
+const RELA: RelocationTags = RelocationTags {
+    address: DynamicTag::RELA,
+    size: DynamicTag::RELASZ,
+    entry: DynamicTag::RELAENT,
+    with_addend: true,
+};
 
-    /// Return the relocation tables that the dynamic table names, and drop the other tables.
-    pub(crate) fn into_relocations(self) -> Result<DynamicRelocations> {
-        self.relocations()?;
-        Ok(self.cache.relocations.into_inner().unwrap_or_default())
-    }
+/// The tags of the `DT_REL` table.
+const REL: RelocationTags = RelocationTags {
+    address: DynamicTag::REL,
+    size: DynamicTag::RELSZ,
+    entry: DynamicTag::RELENT,
+    with_addend: false,
+};
 
+/// The bytes of a `Rel` or `Rela` table, before the parse.
+struct RawRelocations<'a> {
+    /// The table bytes.
+    bytes: &'a [u8],
+    /// The entry size.
+    entsize: usize,
+    /// `true` for `Rela` entries.
+    with_addend: bool,
+    /// The name of the table for the error context.
+    structure: String,
+    /// The virtual address of the table.
+    address: u64,
+}
+
+impl<'a> Linker<'a> {
     /// Parse the relocation tables that the dynamic table names.
-    fn load_relocations(&self) -> Result<DynamicRelocations> {
+    pub(crate) fn relocations(&self) -> Result<DynamicRelocations> {
         Ok(DynamicRelocations {
-            rela: self.relocation_table(&RelocationTags {
-                address: DynamicTag::RELA,
-                size: DynamicTag::RELASZ,
-                entry: DynamicTag::RELAENT,
-                with_addend: true,
-            })?,
-            rel: self.relocation_table(&RelocationTags {
-                address: DynamicTag::REL,
-                size: DynamicTag::RELSZ,
-                entry: DynamicTag::RELENT,
-                with_addend: false,
-            })?,
-            plt: self.plt_relocations()?,
+            rela: self
+                .raw_table(&RELA)?
+                .map(|raw| self.parse_raw(raw))
+                .transpose()?,
+            rel: self
+                .raw_table(&REL)?
+                .map(|raw| self.parse_raw(raw))
+                .transpose()?,
+            plt: self.raw_plt()?.map(|raw| self.parse_raw(raw)).transpose()?,
             relr: self.relr()?,
             android: self.android_relocations()?,
             crel: self.crel_relocations()?,
         })
     }
 
-    /// Return the `Rel` or `Rela` table that `tags` names.
-    fn relocation_table(&self, tags: &RelocationTags) -> Result<Option<RelocationTable>> {
+    /// Return the largest symbol index of the relocations of [`Self::relocations`], or
+    /// `None` if no relocation exists.
+    ///
+    /// The function makes the same checks as [`Self::relocations`], so it returns an error if
+    /// and only if [`Self::relocations`] returns an error. It does not keep the `Rel` and
+    /// `Rela` entries, so it does not allocate memory for them.
+    pub(crate) fn max_relocation_symbol(&self) -> Result<Option<u32>> {
+        let mut max = None;
+        for raw in [
+            self.raw_table(&RELA)?,
+            self.raw_table(&REL)?,
+            self.raw_plt()?,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let found = max_relocation_symbol(
+                raw.bytes,
+                self.encoding(),
+                self.space.machine(),
+                raw.with_addend,
+                raw.entsize,
+            )
+            .map_err(|error| error.in_structure(raw.structure).at_address(raw.address))?;
+            max = max.max(found);
+        }
+        self.relr()?;
+        for table in [self.android_relocations()?, self.crel_relocations()?]
+            .into_iter()
+            .flatten()
+        {
+            max = max.max(table.iter().map(|relocation| relocation.symbol).max());
+        }
+        Ok(max)
+    }
+
+    /// Return the bytes of the `Rel` or `Rela` table that `tags` names.
+    fn raw_table(&self, tags: &RelocationTags) -> Result<Option<RawRelocations<'a>>> {
         let Some(address) = self.pointer(tags.address) else {
             return Ok(None);
         };
@@ -67,12 +118,17 @@ impl Linker<'_> {
             })?,
             None => Relocation::size(self.encoding().class, tags.with_addend),
         };
-        self.parse_relocations(address, size, entsize, tags.with_addend, &structure)
-            .map(Some)
+        Ok(Some(RawRelocations {
+            bytes: self.bytes(address, size, &structure)?,
+            entsize,
+            with_addend: tags.with_addend,
+            structure,
+            address,
+        }))
     }
 
-    /// Return the PLT relocations at `DT_JMPREL`.
-    fn plt_relocations(&self) -> Result<Option<RelocationTable>> {
+    /// Return the bytes of the PLT relocations at `DT_JMPREL`.
+    fn raw_plt(&self) -> Result<Option<RawRelocations<'a>>> {
         let Some(address) = self.pointer(DynamicTag::JMPREL) else {
             return Ok(None);
         };
@@ -89,29 +145,25 @@ impl Linker<'_> {
                 .in_structure(structure));
             }
         };
-        let entsize = Relocation::size(self.encoding().class, with_addend);
-        self.parse_relocations(address, size, entsize, with_addend, structure)
-            .map(Some)
+        Ok(Some(RawRelocations {
+            bytes: self.bytes(address, size, structure)?,
+            entsize: Relocation::size(self.encoding().class, with_addend),
+            with_addend,
+            structure: structure.to_string(),
+            address,
+        }))
     }
 
-    /// Parse `size` bytes of relocations at `address`.
-    fn parse_relocations(
-        &self,
-        address: u64,
-        size: u64,
-        entsize: usize,
-        with_addend: bool,
-        structure: &str,
-    ) -> Result<RelocationTable> {
-        let bytes = self.bytes(address, size, structure)?;
+    /// Parse the entries of a `Rel` or `Rela` table.
+    fn parse_raw(&self, raw: RawRelocations<'_>) -> Result<RelocationTable> {
         RelocationTable::parse_with_entsize(
-            bytes,
+            raw.bytes,
             self.encoding(),
             self.space.machine(),
-            with_addend,
-            entsize,
+            raw.with_addend,
+            raw.entsize,
         )
-        .map_err(|error| error.in_structure(structure).at_address(address))
+        .map_err(|error| error.in_structure(raw.structure).at_address(raw.address))
     }
 
     /// Return the `RELR` table at `DT_RELR`, or else at `DT_ANDROID_RELR`.
@@ -183,45 +235,27 @@ impl Linker<'_> {
             .map_err(|error| error.in_structure("DT_CREL").at_address(address))
     }
 
-    /// Return the System V hash table at `DT_HASH`.
-    pub(crate) fn sysv_hash(&self) -> Result<Option<&SysvHashTable>> {
-        cached(&self.cache.sysv_hash, || {
-            let Some(address) = self.pointer(DynamicTag::HASH) else {
-                return Ok(None);
-            };
-            let encoding = self.encoding();
-            let entry_size = sysv_hash_entry_size(self.space.machine(), encoding.class);
-            let bytes = self.slice(address, "DT_HASH")?;
-            SysvHashTable::parse(bytes, encoding, entry_size)
-                .map(Some)
-                .map_err(|error| error.at_address(address))
-        })
-        .map(Option::as_ref)
+    /// Parse the System V hash table at `DT_HASH`.
+    pub(crate) fn sysv_hash(&self) -> Result<Option<SysvHashTable>> {
+        let Some(address) = self.pointer(DynamicTag::HASH) else {
+            return Ok(None);
+        };
+        let encoding = self.encoding();
+        let entry_size = sysv_hash_entry_size(self.space.machine(), encoding.class);
+        let bytes = self.slice(address, "DT_HASH")?;
+        SysvHashTable::parse(bytes, encoding, entry_size)
+            .map(Some)
+            .map_err(|error| error.at_address(address))
     }
 
-    /// Return the System V hash table and drop the other tables.
-    pub(crate) fn into_sysv_hash(self) -> Result<Option<SysvHashTable>> {
-        self.sysv_hash()?;
-        Ok(self.cache.sysv_hash.into_inner().flatten())
-    }
-
-    /// Return the GNU hash table at `DT_GNU_HASH`.
-    pub(crate) fn gnu_hash(&self) -> Result<Option<&GnuHashTable>> {
-        cached(&self.cache.gnu_hash, || {
-            let Some(address) = self.pointer(DynamicTag::GNU_HASH) else {
-                return Ok(None);
-            };
-            let bytes = self.slice(address, "DT_GNU_HASH")?;
-            GnuHashTable::parse(bytes, self.encoding())
-                .map(Some)
-                .map_err(|error| error.at_address(address))
-        })
-        .map(Option::as_ref)
-    }
-
-    /// Return the GNU hash table and drop the other tables.
-    pub(crate) fn into_gnu_hash(self) -> Result<Option<GnuHashTable>> {
-        self.gnu_hash()?;
-        Ok(self.cache.gnu_hash.into_inner().flatten())
+    /// Parse the GNU hash table at `DT_GNU_HASH`.
+    pub(crate) fn gnu_hash(&self) -> Result<Option<GnuHashTable>> {
+        let Some(address) = self.pointer(DynamicTag::GNU_HASH) else {
+            return Ok(None);
+        };
+        let bytes = self.slice(address, "DT_GNU_HASH")?;
+        GnuHashTable::parse(bytes, self.encoding())
+            .map(Some)
+            .map_err(|error| error.at_address(address))
     }
 }

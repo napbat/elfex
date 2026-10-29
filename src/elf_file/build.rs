@@ -14,7 +14,7 @@ use std::fs::File;
 #[cfg(feature = "std")]
 use std::path::Path;
 
-impl ElfFile {
+impl<D: AsRef<[u8]>> ElfFile<D> {
     /// Build the raw file: the data buffer with the current headers.
     ///
     /// The build starts from the data buffer. Then it writes these items:
@@ -80,9 +80,9 @@ impl ElfFile {
         );
 
         let mut out = Vec::new();
-        out.try_reserve_exact(self.data.len())
+        out.try_reserve_exact(self.len())
             .map_err(|_| Error::generic("the output file is too large to allocate"))?;
-        out.extend_from_slice(&self.data);
+        out.extend_from_slice(self.as_bytes());
         let section_range =
             self.write_section_table(&mut out, &mut header, zero, &program_range)?;
         self.write_program_table(&mut out, &header, &section_range)?;
@@ -140,8 +140,8 @@ impl ElfFile {
     ///
     /// Return an error from [`Self::try_build`], or an error from [`ElfImage::parse`] if the
     /// image does not parse.
-    pub fn to_image(&self) -> Result<ElfImage> {
-        ElfImage::parse(&self.try_build()?)
+    pub fn to_image(&self) -> Result<ElfImage<'static>> {
+        ElfImage::parse(&self.try_build()?).map(ElfImage::into_owned)
     }
 
     /// Build the raw file and write it to a `nostdio` stream.

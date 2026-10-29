@@ -12,7 +12,7 @@ fn check_view(view: &LinkingView<'_>, accessors: &impl Linking) {
     assert!(format!("{view:?}").starts_with("LinkingView { dynamic: "));
     for _ in 0..2 {
         assert_eq!(
-            view.string_table().unwrap().cloned(),
+            view.string_table().unwrap(),
             accessors.dynamic_strings().unwrap()
         );
         assert_eq!(
@@ -28,7 +28,7 @@ fn check_view(view: &LinkingView<'_>, accessors: &impl Linking) {
         assert_eq!(view.runpath().unwrap(), accessors.runpath().unwrap());
         assert_eq!(
             view.relocations().unwrap(),
-            &accessors.dynamic_relocations().unwrap()
+            accessors.dynamic_relocations().unwrap()
         );
         assert_eq!(
             view.sysv_hash_table().unwrap().cloned(),
@@ -45,7 +45,7 @@ fn check_view(view: &LinkingView<'_>, accessors: &impl Linking) {
         assert_eq!(view.symbols().unwrap(), list);
         assert_eq!(view.exports().unwrap(), accessors.exports().unwrap());
         assert_eq!(view.imports().unwrap(), accessors.imports().unwrap());
-        let names = list.iter().map(|symbol| symbol.name.as_str());
+        let names = list.iter().map(|symbol| &*symbol.name);
         for name in names.chain(["missing", ""]) {
             assert_eq!(
                 view.lookup(name).unwrap(),

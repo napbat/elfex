@@ -57,7 +57,7 @@ impl Patcher<'_> {
     }
 }
 
-impl ElfImage {
+impl ElfImage<'_> {
     /// Make a loader-mapped image for the runtime base `runtime_base`, and apply the relative
     /// relocations.
     ///

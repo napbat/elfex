@@ -62,7 +62,7 @@ fn to_usize(value: u64) -> usize {
 
 /// Check that each `PT_LOAD` segment of `mapped` starts with the file bytes of the same
 /// segment of `raw`, and that the other memory bytes are zero.
-fn assert_same_load_data(raw: &ElfImage, mapped: &ElfImage) {
+fn assert_same_load_data(raw: &ElfImage<'_>, mapped: &ElfImage<'_>) {
     assert!(raw.program_headers().eq(mapped.program_headers()));
     for (file, memory) in raw.segments.iter().zip(&mapped.segments) {
         if !file.is_load() {
@@ -70,7 +70,7 @@ fn assert_same_load_data(raw: &ElfImage, mapped: &ElfImage) {
         }
         let filesz = to_usize(file.header.filesz);
         assert_eq!(file.data.len(), filesz);
-        assert_eq!(&memory.data[..filesz], file.data.as_slice());
+        assert_eq!(&memory.data[..filesz], &*file.data);
         assert!(memory.data[filesz..].iter().all(|byte| *byte == 0));
         assert!(memory.data.len() <= to_usize(memory.header.memsz));
     }
@@ -146,8 +146,8 @@ fn mapped_image_reads_bss_as_zero_memory() {
         image.read_vaddr(bss, 0x3000).expect("the .bss is mapped"),
         vec![0; 0x3000]
     );
-    let mapped = ElfImage::parse_mapped(&image.to_mapped_image().expect("the image should map"))
-        .expect("the mapped image should parse");
+    let mapped_bytes = image.to_mapped_image().expect("the image should map");
+    let mapped = ElfImage::parse_mapped(&mapped_bytes).expect("the mapped image should parse");
     assert_eq!(
         mapped.read_vaddr(bss, 0x3000).expect("the .bss is mapped"),
         vec![0; 0x3000]
@@ -240,10 +240,7 @@ fn sparse_remote_process_reads_with_missing_pages() {
         expected[page..page_end].fill(0);
         for segment in image.load_segments() {
             let start = to_usize(segment.header.vaddr);
-            assert_eq!(
-                segment.data.as_slice(),
-                &expected[start..start + segment.data.len()]
-            );
+            assert_eq!(&*segment.data, &expected[start..start + segment.data.len()]);
             assert!(segment.data.len() >= to_usize(segment.header.filesz));
         }
         assert_eq!(

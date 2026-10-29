@@ -248,7 +248,7 @@ fn static_symbol_list_resolves_extended_indices() {
     let list = elf.symbol_list().unwrap();
     let summary: Vec<(u32, &str, Option<u32>)> = list
         .iter()
-        .map(|symbol| (symbol.index, symbol.name.as_str(), symbol.section_index))
+        .map(|symbol| (symbol.index, &*symbol.name, symbol.section_index))
         .collect();
     assert_eq!(
         summary,

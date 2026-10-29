@@ -63,15 +63,18 @@ mod tests;
 ///   example `PT_NOTE` in a core file): the `p_filesz` bytes at `p_offset`.
 /// - All other segments: no bytes. Their bytes are in a `PT_LOAD` segment. Read them with
 ///   [`ElfImage::read_vaddr`].
+///
+/// The data borrows the source bytes when the parser reads a byte slice, and is a copy when
+/// it reads a [`ReadAt`](crate::ReadAt) source. A write makes a copy of borrowed data.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Segment {
+pub struct Segment<'a> {
     /// The program header (`Elf32_Phdr` or `Elf64_Phdr`).
     pub header: ProgramHeader,
     /// The bytes of the segment. The bytes start at the virtual address `p_vaddr`.
-    pub data: Vec<u8>,
+    pub data: Cow<'a, [u8]>,
 }
 
-impl Segment {
+impl Segment<'_> {
     /// Return the size of the segment in memory (`p_memsz`).
     #[must_use]
     pub const fn memory_size(&self) -> u64 {
@@ -82,6 +85,15 @@ impl Segment {
     #[must_use]
     pub fn is_load(&self) -> bool {
         self.header.is_load()
+    }
+
+    /// Return a segment that owns a copy of its data.
+    #[must_use]
+    pub fn into_owned(self) -> Segment<'static> {
+        Segment {
+            header: self.header,
+            data: Cow::Owned(self.data.into_owned()),
+        }
     }
 
     /// Return the data bytes that are in the memory range: at most `p_memsz` bytes.
@@ -95,7 +107,9 @@ impl Segment {
 /// The loader view of an ELF file or a loader-mapped ELF image.
 ///
 /// The image holds the file header and one [`Segment`] for each program header, in program
-/// header order. It does not hold sections.
+/// header order. It does not hold sections. The segments borrow the source bytes for the
+/// lifetime `'a` when the parser reads a byte slice ([`Self::parse`]). Use
+/// [`Self::into_owned`] to keep the image after the bytes go out of scope.
 ///
 /// - Parse a raw file with [`Self::parse`], and a loader-mapped image with
 ///   [`Self::parse_mapped`]. Read from any [`ReadAt`](crate::ReadAt) source with
@@ -117,40 +131,53 @@ impl Segment {
 ///     .try_build()?;
 /// let data = file.section_by_name(".data").expect("the file has .data").header.addr;
 ///
-/// let image = ElfImage::parse(&file.try_build()?)?;
+/// let bytes = file.try_build()?;
+/// let image = ElfImage::parse(&bytes)?;
 /// assert_eq!(image.source_layout(), SourceLayout::File);
 /// assert_eq!(image.read_vaddr(data, 4)?, [1, 2, 3, 4]);
 /// assert!(image.segment(SegmentType::GNU_STACK).is_some());
 ///
 /// // Make the bytes that a loader maps, and parse them again.
-/// let mapped = ElfImage::parse_mapped(&image.to_mapped_image()?)?;
+/// let mapped_bytes = image.to_mapped_image()?;
+/// let mapped = ElfImage::parse_mapped(&mapped_bytes)?;
 /// assert_eq!(mapped.source_layout(), SourceLayout::Mapped);
 /// assert_eq!(mapped.read_vaddr(data, 4)?, [1, 2, 3, 4]);
 /// # Ok::<(), elfex::Error>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ElfImage {
+pub struct ElfImage<'a> {
     /// The ELF file header (`Elf32_Ehdr` or `Elf64_Ehdr`).
     pub header: FileHeader,
     /// The segments, one for each program header, in program header order.
-    pub segments: Vec<Segment>,
+    pub segments: Vec<Segment<'a>>,
     /// The layout of the source that the parser read.
     source_layout: SourceLayout,
     /// The runtime address of the image origin, if it is known.
     runtime_base: Option<u64>,
 }
 
-impl ElfImage {
+impl<'a> ElfImage<'a> {
     /// Create an image from a file header and segments.
     ///
     /// The image has the file layout and no runtime base.
     #[must_use]
-    pub fn new(header: FileHeader, segments: Vec<Segment>) -> Self {
+    pub fn new(header: FileHeader, segments: Vec<Segment<'a>>) -> Self {
         Self {
             header,
             segments,
             source_layout: SourceLayout::File,
             runtime_base: None,
+        }
+    }
+
+    /// Return an image that owns copies of all segment data.
+    #[must_use]
+    pub fn into_owned(self) -> ElfImage<'static> {
+        ElfImage {
+            header: self.header,
+            segments: self.segments.into_iter().map(Segment::into_owned).collect(),
+            source_layout: self.source_layout,
+            runtime_base: self.runtime_base,
         }
     }
 
@@ -217,13 +244,13 @@ impl ElfImage {
     }
 
     /// Iterate over the `PT_LOAD` segments.
-    pub fn load_segments(&self) -> impl Iterator<Item = &Segment> {
+    pub fn load_segments(&self) -> impl Iterator<Item = &Segment<'a>> {
         self.segments.iter().filter(|segment| segment.is_load())
     }
 
     /// Return the first segment of `segment_type`.
     #[must_use]
-    pub fn segment(&self, segment_type: SegmentType) -> Option<&Segment> {
+    pub fn segment(&self, segment_type: SegmentType) -> Option<&Segment<'a>> {
         self.segments
             .iter()
             .find(|segment| segment.header.segment_type == segment_type)

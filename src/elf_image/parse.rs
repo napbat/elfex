@@ -22,8 +22,9 @@ const PAGE_SIZE: u64 = 4096;
 /// The maximum quantity of segment data that the parser reads from a source with a known
 /// size, as a multiple of the source size.
 ///
-/// Segments can share source bytes, but each segment owns a copy. This limit keeps the memory
-/// use in proportion to the source.
+/// Segments can share source bytes, and each segment from a [`ReadAt`] source owns a copy.
+/// This limit keeps the memory use in proportion to the source. The parser applies the
+/// limit to a byte slice too, so that both sources accept the same inputs.
 const SEGMENT_DATA_LIMIT: u64 = 16;
 
 /// The maximum quantity of segment data that the parser reads from a source with an unknown
@@ -69,44 +70,71 @@ struct SegmentSource<'r, R> {
     budget: u64,
 }
 
-impl ElfImage {
-    /// Parse a raw ELF file in a byte slice.
+impl<'a> ElfImage<'a> {
+    /// Parse a raw ELF file in a byte slice. The segments borrow the bytes.
     ///
     /// # Errors
     ///
-    /// Return an error for any condition listed on [`Self::read_from_with_options`].
-    pub fn parse(data: &[u8]) -> Result<Self> {
+    /// Return an error for any condition listed on [`ElfImage::read_from_with_options`].
+    pub fn parse(data: &'a [u8]) -> Result<Self> {
         Self::parse_with_options(data, ParseOptions::file())
     }
 
     /// Parse a loader-mapped ELF image in a byte slice. Byte 0 of `data` is the image origin.
+    /// The segments borrow the bytes.
     ///
     /// # Errors
     ///
-    /// Return an error for any condition listed on [`Self::read_from_with_options`].
-    pub fn parse_mapped(data: &[u8]) -> Result<Self> {
+    /// Return an error for any condition listed on [`ElfImage::read_from_with_options`].
+    pub fn parse_mapped(data: &'a [u8]) -> Result<Self> {
         Self::parse_with_options(data, ParseOptions::mapped())
     }
 
     /// Parse a loader-mapped ELF image in a byte slice, and keep the runtime address of the
-    /// image origin.
+    /// image origin. The segments borrow the bytes.
     ///
     /// # Errors
     ///
-    /// Return an error for any condition listed on [`Self::read_from_with_options`].
-    pub fn parse_mapped_at(data: &[u8], runtime_base: u64) -> Result<Self> {
+    /// Return an error for any condition listed on [`ElfImage::read_from_with_options`].
+    pub fn parse_mapped_at(data: &'a [u8], runtime_base: u64) -> Result<Self> {
         Self::parse_with_options(data, ParseOptions::mapped().runtime_base(runtime_base))
     }
 
     /// Parse an ELF image in a byte slice with explicit [`ParseOptions`].
     ///
+    /// The parser accepts the same inputs as [`ElfImage::read_from_with_options`] with a
+    /// [`SliceReader`]. Each segment borrows its bytes. A segment is a copy only if
+    /// [`MissingSegmentData::Zero`] adds zero bytes after the end of `data`.
+    ///
     /// # Errors
     ///
-    /// Return an error for any condition listed on [`Self::read_from_with_options`].
-    pub fn parse_with_options(data: &[u8], options: ParseOptions) -> Result<Self> {
-        Self::read_from_with_options(&SliceReader::new(data), 0, options)
+    /// Return an error for any condition listed on [`ElfImage::read_from_with_options`].
+    pub fn parse_with_options(data: &'a [u8], options: ParseOptions) -> Result<Self> {
+        let reader = SliceReader::new(data);
+        let headers = ElfHeaders::read_from(&reader, 0, options.layout)?;
+        let mut source = SegmentSource::new(&reader, 0, options);
+        let planner = ReadPlanner::new(&headers, options.layout);
+        let mut segments = Vec::with_capacity(headers.program_headers.len());
+        for header in &headers.program_headers {
+            let data = match planner.plan(header)? {
+                Some(request) => source.slice(data, request)?,
+                None => Cow::Borrowed(&[][..]),
+            };
+            segments.push(Segment {
+                header: *header,
+                data,
+            });
+        }
+        Ok(Self {
+            header: headers.header,
+            segments,
+            source_layout: options.layout,
+            runtime_base: options.runtime_base,
+        })
     }
+}
 
+impl ElfImage<'static> {
     /// Read an ELF image from a [`ReadAt`] source with an explicit layout.
     ///
     /// `base_offset` is the offset of the ELF header in the source. The parser rejects
@@ -190,16 +218,7 @@ impl ElfImage {
         options: ParseOptions,
     ) -> Result<Self> {
         let headers = ElfHeaders::read_from(reader, base_offset, options.layout)?;
-        let source_size = reader.size().map(|size| size.saturating_sub(base_offset));
-        let mut source = SegmentSource {
-            reader,
-            base_offset,
-            options,
-            source_size,
-            budget: source_size.map_or(MAX_UNSIZED_SEGMENT_BYTES, |size| {
-                size.saturating_mul(SEGMENT_DATA_LIMIT)
-            }),
-        };
+        let mut source = SegmentSource::new(reader, base_offset, options);
         let planner = ReadPlanner::new(&headers, options.layout);
         let mut segments = Vec::with_capacity(headers.program_headers.len());
         for header in &headers.program_headers {
@@ -209,7 +228,7 @@ impl ElfImage {
             };
             segments.push(Segment {
                 header: *header,
-                data,
+                data: Cow::Owned(data),
             });
         }
         Ok(Self {
@@ -241,7 +260,7 @@ impl ElfImage {
     pub fn from_stream<R: nostdio::Read>(stream: &mut R) -> Result<Self> {
         let mut data = Vec::new();
         stream.read_to_end(&mut data)?;
-        Self::parse(&data)
+        ElfImage::parse(&data).map(ElfImage::into_owned)
     }
 }
 
@@ -318,18 +337,29 @@ impl ReadPlanner {
     }
 }
 
-impl<R: ReadAt> SegmentSource<'_, R> {
-    /// Read the bytes of `request`.
-    fn read(&mut self, request: SegmentRead) -> Result<Vec<u8>> {
-        let absolute = self
-            .base_offset
-            .checked_add(request.offset)
-            .ok_or_else(|| {
-                Error::invalid_segment("the segment offset overflows").at_offset(request.offset)
-            })?;
-        let Some(source_size) = self.source_size else {
-            return self.read_unsized(request, absolute);
-        };
+impl<'r, R: ReadAt> SegmentSource<'r, R> {
+    /// Make a source of segment data at `base_offset` in `reader`.
+    fn new(reader: &'r R, base_offset: u64, options: ParseOptions) -> Self {
+        let source_size = reader.size().map(|size| size.saturating_sub(base_offset));
+        Self {
+            reader,
+            base_offset,
+            options,
+            source_size,
+            budget: source_size.map_or(MAX_UNSIZED_SEGMENT_BYTES, |size| {
+                size.saturating_mul(SEGMENT_DATA_LIMIT)
+            }),
+        }
+    }
+
+    /// Check `request` against a source of `source_size` bytes, and charge the budget.
+    /// Return the number of bytes that the source has, the number of bytes of the segment
+    /// data, and the number of required bytes.
+    fn sized_extent(
+        &mut self,
+        request: SegmentRead,
+        source_size: u64,
+    ) -> Result<(usize, usize, usize)> {
         let zero = self.options.missing_segment_data == MissingSegmentData::Zero;
         let readable = source_size.saturating_sub(request.offset).min(request.len);
         if readable < request.required {
@@ -348,9 +378,44 @@ impl<R: ReadAt> SegmentSource<'_, R> {
         }
         let total = readable.max(request.required);
         self.charge(total, request.offset)?;
-        let total = to_usize(total, request.offset)?;
-        let readable = to_usize(readable, request.offset)?;
-        let required = to_usize(request.required, request.offset)?;
+        Ok((
+            to_usize(readable, request.offset)?,
+            to_usize(total, request.offset)?,
+            to_usize(request.required, request.offset)?,
+        ))
+    }
+
+    /// Return the bytes of `request` in `data`, the bytes of the source. Borrow the bytes,
+    /// or make a copy if the segment needs zero bytes after the end of `data`.
+    fn slice<'a>(&mut self, data: &'a [u8], request: SegmentRead) -> Result<Cow<'a, [u8]>> {
+        let source_size = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        let (readable, total, _) = self.sized_extent(request, source_size)?;
+        let present = usize::try_from(request.offset)
+            .ok()
+            .and_then(|start| data.get(start..)?.get(..readable))
+            .unwrap_or_default();
+        if present.len() == total {
+            return Ok(Cow::Borrowed(present));
+        }
+        let mut owned = zeroed(total)?;
+        // `total` is not smaller than `readable`, and `present` has at most `readable` bytes.
+        owned[..present.len()].copy_from_slice(present);
+        Ok(Cow::Owned(owned))
+    }
+
+    /// Read the bytes of `request`.
+    fn read(&mut self, request: SegmentRead) -> Result<Vec<u8>> {
+        let absolute = self
+            .base_offset
+            .checked_add(request.offset)
+            .ok_or_else(|| {
+                Error::invalid_segment("the segment offset overflows").at_offset(request.offset)
+            })?;
+        let Some(source_size) = self.source_size else {
+            return self.read_unsized(request, absolute);
+        };
+        let zero = self.options.missing_segment_data == MissingSegmentData::Zero;
+        let (readable, total, required) = self.sized_extent(request, source_size)?;
         let mut data = zeroed(total)?;
         // `total` is not smaller than `readable`.
         let buffer = &mut data[..readable];

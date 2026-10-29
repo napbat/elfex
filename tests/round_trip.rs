@@ -89,7 +89,7 @@ fn sample_bytes(encoding: Encoding) -> Vec<u8> {
 
 /// Parse `bytes`, check that the file has no validation errors, and check that the round trip
 /// of the parsed file is lossless.
-fn reparse(bytes: &[u8]) -> ElfFile {
+fn reparse(bytes: &[u8]) -> ElfFile<&[u8]> {
     let file = ElfFile::parse(bytes).expect("the edited file should parse");
     let issues = file.validate();
     assert!(
@@ -105,7 +105,7 @@ fn reparse(bytes: &[u8]) -> ElfFile {
 }
 
 /// Return the index of the section `name`.
-fn section_index(file: &ElfFile, name: &str) -> usize {
+fn section_index<D: AsRef<[u8]>>(file: &ElfFile<D>, name: &str) -> usize {
     file.section_by_name(name)
         .unwrap_or_else(|| panic!("the file should have a {name} section"))
         .index
@@ -159,7 +159,7 @@ fn round_trip_keeps_bytes_after_the_last_item() {
 fn set_section_data_shrinks_in_place_and_grows_at_the_end() {
     for encoding in ENCODINGS {
         let bytes = sample_bytes(encoding);
-        let mut file = ElfFile::parse(&bytes).expect("the file should parse");
+        let mut file = ElfFile::from_vec(bytes.clone()).expect("the file should parse");
 
         let rodata = section_index(&file, ".rodata");
         let rodata_offset = file.section_headers()[rodata].offset;
@@ -173,7 +173,8 @@ fn set_section_data_shrinks_in_place_and_grows_at_the_end() {
         file.set_section_data(comment, new_comment.clone())
             .expect("a larger section without SHF_ALLOC should move");
 
-        let edited = reparse(&file.try_build().expect("the edited file should build"));
+        let built = file.try_build().expect("the edited file should build");
+        let edited = reparse(&built);
         let rodata = edited
             .section_by_name(".rodata")
             .expect("the file has .rodata");
@@ -190,7 +191,7 @@ fn set_section_data_shrinks_in_place_and_grows_at_the_end() {
 #[test]
 fn add_section_appends_data_and_a_name() {
     for encoding in ENCODINGS {
-        let mut file = ElfFile::parse(&sample_bytes(encoding)).expect("the file should parse");
+        let mut file = ElfFile::from_vec(sample_bytes(encoding)).expect("the file should parse");
         let count = file.section_headers().len();
         let index = file
             .add_section(NewSection::new(
@@ -205,7 +206,8 @@ fn add_section_appends_data_and_a_name() {
         alloc.flags = SHF_ALLOC;
         assert!(file.add_section(alloc).is_err());
 
-        let edited = reparse(&file.try_build().expect("the edited file should build"));
+        let built = file.try_build().expect("the edited file should build");
+        let edited = reparse(&built);
         assert_eq!(edited.section_headers().len(), count + 1);
         let added = edited
             .section_by_name(".elfex.extra")
@@ -224,7 +226,7 @@ fn add_section_appends_data_and_a_name() {
 #[test]
 fn remove_section_renumbers_the_other_sections() {
     for encoding in ENCODINGS {
-        let mut file = ElfFile::parse(&sample_bytes(encoding)).expect("the file should parse");
+        let mut file = ElfFile::from_vec(sample_bytes(encoding)).expect("the file should parse");
         let count = file.section_headers().len();
         let names: Vec<String> = file
             .section_names()
@@ -237,7 +239,8 @@ fn remove_section_renumbers_the_other_sections() {
         file.remove_section(comment)
             .expect("the comment section should remove");
 
-        let edited = reparse(&file.try_build().expect("the edited file should build"));
+        let built = file.try_build().expect("the edited file should build");
+        let edited = reparse(&built);
         assert_eq!(edited.section_headers().len(), count - 1);
         assert_eq!(edited.section_names(), names);
         assert!(edited.section_by_name(".comment").is_none());
@@ -251,7 +254,7 @@ fn remove_section_renumbers_the_other_sections() {
 #[test]
 fn add_load_segment_maps_new_data() {
     for encoding in ENCODINGS {
-        let mut file = ElfFile::parse(&sample_bytes(encoding)).expect("the file should parse");
+        let mut file = ElfFile::from_vec(sample_bytes(encoding)).expect("the file should parse");
         let loads = file.headers().load_segments().count();
         let data = b"data of a new segment".to_vec();
         let vaddr = file
@@ -288,7 +291,8 @@ fn set_interpreter_writes_in_place_or_in_a_new_segment() {
     let long_path = "/opt/elfex/a/very/long/path/to/the/program/interpreter/ld-linux.so.2";
     for encoding in ENCODINGS {
         for path in ["/lib/ld.so", long_path] {
-            let mut file = ElfFile::parse(&sample_bytes(encoding)).expect("the file should parse");
+            let mut file =
+                ElfFile::from_vec(sample_bytes(encoding)).expect("the file should parse");
             file.set_interpreter(path)
                 .expect("the interpreter should change");
             assert!(file.set_interpreter("bad\0path").is_err());

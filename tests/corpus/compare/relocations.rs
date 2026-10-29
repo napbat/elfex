@@ -15,13 +15,13 @@ use crate::report::{DYNAMIC_RELOCATIONS, Findings, RELOCATIONS};
 
 /// Compare the relocation sections (`Relocations`) and the relocation tables of the dynamic
 /// table (`--dyn-relocations`).
-pub fn compare(file: &ElfFile, reference: &Reference, findings: &mut Findings) {
+pub fn compare(file: &ElfFile<&[u8]>, reference: &Reference, findings: &mut Findings) {
     sections(file, &reference.json, findings);
     dynamic(file, reference, findings);
 }
 
 /// Compare each relocation section.
-fn sections(file: &ElfFile, json: &Value, findings: &mut Findings) {
+fn sections(file: &ElfFile<&[u8]>, json: &Value, findings: &mut Findings) {
     let list = match file.relocation_sections() {
         Ok(list) => list,
         Err(error) => {
@@ -72,7 +72,7 @@ fn sections(file: &ElfFile, json: &Value, findings: &mut Findings) {
 
 /// Compare the entries of one relocation section.
 fn table(
-    file: &ElfFile,
+    file: &ElfFile<&[u8]>,
     section: &RelocationSection,
     entries: &[Value],
     names: &[String],
@@ -176,7 +176,7 @@ fn spec_name(machine: Machine, name: &str) -> &str {
 
 /// Compare the addresses of a `SHT_RELR` or `SHT_ANDROID_RELR` section with the decoded
 /// entries of the reference.
-fn relr_section(file: &ElfFile, index: usize, entries: &[Value], findings: &mut Findings) {
+fn relr_section(file: &ElfFile<&[u8]>, index: usize, entries: &[Value], findings: &mut Findings) {
     let table = file
         .section_data(index)
         .and_then(|data| RelrTable::parse(data, file.encoding()));
@@ -233,7 +233,11 @@ fn relr_section(file: &ElfFile, index: usize, entries: &[Value], findings: &mut 
 ///
 /// `llvm-readelf --dyn-relocations` does not show these tables, so the section is the
 /// reference. The section entries are compared with the reference in `table`.
-fn packed_dynamic_table(file: &ElfFile, section: &RelocationSection, findings: &mut Findings) {
+fn packed_dynamic_table(
+    file: &ElfFile<&[u8]>,
+    section: &RelocationSection,
+    findings: &mut Findings,
+) {
     let Some(header) = file.section_headers().get(section.index) else {
         return;
     };
@@ -284,7 +288,7 @@ impl SymbolNames {
     /// Return the display names of the symbol table at `index`, with an empty name at index 0.
     fn for_table(
         &mut self,
-        file: &ElfFile,
+        file: &ElfFile<&[u8]>,
         index: Option<usize>,
         findings: &mut Findings,
     ) -> &[String] {
@@ -314,7 +318,7 @@ impl SymbolNames {
 }
 
 /// Compare the relocation tables of the dynamic table with the text output of the reference.
-fn dynamic(file: &ElfFile, reference: &Reference, findings: &mut Findings) {
+fn dynamic(file: &ElfFile<&[u8]>, reference: &Reference, findings: &mut Findings) {
     let relocations = match file.dynamic_relocations() {
         Ok(relocations) => relocations,
         Err(error) => {

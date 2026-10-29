@@ -57,7 +57,7 @@ fn sized_file_source_with_failed_read() {
     assert_eq!(data.len(), 0x40);
     assert_eq!(data[..0x10], bytes[0x200..0x210]);
     assert!(all_zero(&data[0x10..]));
-    assert_eq!(image.segments[2].data, bytes[..0x200]);
+    assert_eq!(*image.segments[2].data, bytes[..0x200]);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn sized_mapped_source_with_failed_read() {
     let reader = TestReader::sized(&mapped).with_hole(0x1300..0x1310);
     for options in [ParseOptions::mapped(), options] {
         let image = ElfImage::read_from_with_options(&reader, 0, options).unwrap();
-        assert_eq!(image.segments[3].data, mapped[0x1200..0x1300]);
+        assert_eq!(*image.segments[3].data, mapped[0x1200..0x1300]);
     }
 
     // The hole is before `p_filesz`.

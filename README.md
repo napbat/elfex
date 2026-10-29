@@ -71,7 +71,7 @@ are still available. `nostdio` then supplies its own traits and error type. An I
 
 | Type | Use it for |
 | --- | --- |
-| `ElfFile` | A full raw file. It keeps all bytes, and gives the sections and the edits |
+| `ElfFile` | A full raw file. It keeps all bytes, or borrows them, and gives the sections and the edits |
 | `ElfImage` | The loader view: the file header and the segments, from raw bytes or loader-mapped bytes |
 | `ElfHeaders` | The headers only. It does not load section or segment data |
 | `ElfBuilder` | Building a new executable or shared object |
@@ -100,8 +100,9 @@ for library in file.needed_libraries()? {
 # Ok::<(), elfex::Error>(())
 ```
 
-Use `ElfFile::parse(raw_bytes)` for a raw file with sections. Use `ElfImage::parse(raw_bytes)`
-if you need only the segments, as the loader sees them.
+Use `ElfFile::parse(raw_bytes)` for a raw file with sections. It borrows the bytes and does not
+copy them. Use `ElfImage::parse(raw_bytes)` if you need only the segments, as the loader sees
+them. It also borrows the bytes.
 
 ## Raw files versus mapped images
 
@@ -209,8 +210,10 @@ does the same layout-aware translation as the image parser. It does not read the
 
 ## Editing
 
-`ElfFile` keeps all bytes of the file. Each edit changes the data buffer and the headers.
-`ElfFile::try_build` writes the headers into a copy of the buffer:
+`ElfFile` keeps all bytes of the file. `ElfFile::parse` borrows the bytes. The edits that change
+the size of the file need a file that owns its bytes: use `ElfFile::from_vec` or
+`ElfFile::into_owned`. Each edit changes the data buffer and the headers. `ElfFile::try_build`
+writes the headers into a copy of the buffer:
 
 - `set_section_data` replaces the data of a section. Smaller data stays in place. Larger data
   of a section without `SHF_ALLOC` moves to the end of the file.
@@ -238,7 +241,7 @@ use elfex::{BuilderSection, ElfBuilder, ElfFile, Encoding, Machine, NewSection, 
 #     .try_build()?
 #     .try_build()?;
 // The round trip is lossless.
-let mut file = ElfFile::parse(&bytes)?;
+let mut file = ElfFile::from_vec(bytes.clone())?;
 assert_eq!(file.try_build()?, bytes);
 
 // Change the program interpreter, as `patchelf --set-interpreter` does.
@@ -252,7 +255,8 @@ file.set_section_data(comment, b"elfex 0.1\0".to_vec())?;
 file.add_section(NewSection::new(".elfex", SectionType::PROGBITS, vec![1, 2, 3]))?;
 let address = file.add_load_segment(PF_R | PF_W, vec![0x5a; 64], 0x1000)?;
 
-let edited = ElfFile::parse(&file.try_build()?)?;
+let edited_bytes = file.try_build()?;
+let edited = ElfFile::parse(&edited_bytes)?;
 assert!(!edited.validate().has_errors());
 assert_eq!(edited.read_vaddr(address, 64)?, [0x5a; 64]);
 assert_eq!(edited.interpreter()?.as_deref(), Some("/opt/glibc/lib/ld-linux-x86-64.so.2"));

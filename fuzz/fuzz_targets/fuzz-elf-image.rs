@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
 });
 
 /// Run the build paths, the validation and the symbol and note accessors on `image`.
-fn exercise(image: &ElfImage) {
+fn exercise(image: &ElfImage<'_>) {
     let _ = image.validate();
     let _ = image.dynamic_symbol_list();
     let _ = image.core_file_mappings();
@@ -50,7 +50,7 @@ fn exercise(image: &ElfImage) {
 /// `None` if an end overflows.
 ///
 /// The file ends at the end of the last segment file range or of the program header table.
-fn dump_size(image: &ElfImage) -> Option<u64> {
+fn dump_size(image: &ElfImage<'_>) -> Option<u64> {
     let count = u64::try_from(image.segments.len()).ok()?;
     let table_size = count.checked_mul(u64::from(image.header.phentsize.max(56)))?;
     let table_end = image.header.phoff.checked_add(table_size)?;

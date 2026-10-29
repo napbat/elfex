@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::io::Write;
 
 /// Return the string at `offset`, or a placeholder if the string table cannot give it.
-pub fn string_at(strings: Option<&StringTable>, offset: u32) -> String {
+pub fn string_at(strings: Option<&StringTable<'_>>, offset: u32) -> String {
     strings
         .and_then(|table| table.get_lossy(offset).ok())
         .map_or_else(|| format!("<string {offset:#x}>"), Cow::into_owned)

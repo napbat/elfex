@@ -1,7 +1,4 @@
 //! Check at compile time that the public types implement `Send` and `Sync`.
-//!
-//! `LinkingView` is the exception: it is `Send`, but not `Sync`, because it keeps the parsed
-//! tables in `OnceCell` values.
 
 use elfex::{
     AuxvEntry, BuilderLayout, BuiltSymbolTable, Cie, DynamicEntry, DynamicInfo, DynamicRelocations,
@@ -16,19 +13,18 @@ use elfex::{
 
 fn assert_send_sync<T: Send + Sync>() {}
 
-fn assert_send<T: Send>() {}
-
 #[test]
-fn linking_view_is_send() {
-    assert_send::<LinkingView<'static>>();
+fn linking_view_is_send_and_sync() {
+    assert_send_sync::<LinkingView<'static>>();
 }
 
 #[test]
 fn public_types_are_send_and_sync() {
     assert_send_sync::<ElfFile>();
-    assert_send_sync::<ElfImage>();
+    assert_send_sync::<ElfFile<&[u8]>>();
+    assert_send_sync::<ElfImage<'static>>();
     assert_send_sync::<ElfHeaders>();
-    assert_send_sync::<Segment>();
+    assert_send_sync::<Segment<'static>>();
     assert_send_sync::<SectionRef<'static>>();
     assert_send_sync::<Error>();
     assert_send_sync::<ErrorContext>();
@@ -41,13 +37,13 @@ fn public_types_are_send_and_sync() {
     assert_send_sync::<DynamicTable>();
     assert_send_sync::<DynamicInfo>();
     assert_send_sync::<DynamicRelocations>();
-    assert_send_sync::<StringTable>();
+    assert_send_sync::<StringTable<'static>>();
     assert_send_sync::<StringTableBuilder>();
     assert_send_sync::<SymbolTable>();
     assert_send_sync::<SymbolTableBuilder>();
     assert_send_sync::<BuiltSymbolTable>();
     assert_send_sync::<SymbolSectionIndexTable>();
-    assert_send_sync::<NamedSymbol>();
+    assert_send_sync::<NamedSymbol<'static>>();
     assert_send_sync::<RelocationTable>();
     assert_send_sync::<RelrTable>();
     assert_send_sync::<RelocationSection>();

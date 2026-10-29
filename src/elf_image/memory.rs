@@ -15,9 +15,32 @@ fn memory_contains(header: &ProgramHeader, vaddr: u64, len: u64) -> bool {
         .is_some_and(|range| range.start <= vaddr && end <= range.end)
 }
 
-impl ElfImage {
+/// Make `data` an owned buffer of at least `min_len` bytes, and return the buffer. Add zero
+/// bytes at the end if the data is shorter.
+fn owned_data<'d>(data: &'d mut Cow<'_, [u8]>, min_len: usize) -> Result<&'d mut Vec<u8>> {
+    let allocation_error = || Error::generic(format!("cannot allocate {min_len} bytes"));
+    if let Cow::Borrowed(bytes) = *data {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(bytes.len().max(min_len))
+            .map_err(|_| allocation_error())?;
+        owned.extend_from_slice(bytes);
+        *data = Cow::Owned(owned);
+    }
+    // The data is owned now, so `to_mut` does not copy it.
+    let owned = data.to_mut();
+    if owned.len() < min_len {
+        owned
+            .try_reserve_exact(min_len - owned.len())
+            .map_err(|_| allocation_error())?;
+        owned.resize(min_len, 0);
+    }
+    Ok(owned)
+}
+
+impl<'a> ElfImage<'a> {
     /// Return the first `PT_LOAD` segment whose memory range contains `len` bytes at `vaddr`.
-    pub(super) fn load_segment_for(&self, vaddr: u64, len: u64) -> Option<&Segment> {
+    pub(super) fn load_segment_for(&self, vaddr: u64, len: u64) -> Option<&Segment<'a>> {
         self.load_segments()
             .find(|segment| memory_contains(&segment.header, vaddr, len))
     }
@@ -79,7 +102,8 @@ impl ElfImage {
     ///
     /// The bytes must be in the memory range of one `PT_LOAD` segment. If the bytes go past
     /// the segment data, the function first extends the data with zeros. The data never
-    /// grows past `p_memsz`.
+    /// grows past `p_memsz`. If the segment borrows its data, the function first makes a
+    /// copy.
     ///
     /// [`Self::try_build`] writes only the first `p_filesz` bytes of each segment. To keep
     /// bytes after `p_filesz` in the raw file, also increase `p_filesz`.
@@ -103,15 +127,9 @@ impl ElfImage {
         let end = start
             .checked_add(bytes.len())
             .ok_or_else(|| Error::invalid_address(vaddr))?;
-        if segment.data.len() < end {
-            segment
-                .data
-                .try_reserve_exact(end - segment.data.len())
-                .map_err(|_| Error::generic(format!("cannot allocate {end} bytes")))?;
-            segment.data.resize(end, 0);
-        }
+        let data = owned_data(&mut segment.data, end)?;
         // The data has at least `end` bytes.
-        segment.data[start..end].copy_from_slice(bytes);
+        data[start..end].copy_from_slice(bytes);
         Ok(())
     }
 
@@ -135,7 +153,7 @@ impl ElfImage {
             self.slice_from_vaddr(segment.header.vaddr)
                 .map_err(|error| error.in_structure("PT_INTERP"))?
         } else {
-            segment.data.as_slice()
+            &segment.data
         };
         let limit = usize::try_from(segment.header.filesz)
             .map_or(bytes.len(), |size| size.min(bytes.len()));

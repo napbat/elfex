@@ -43,7 +43,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let length = usize::from(length % 8).min(rest.len());
     let (ops, bytes) = rest.split_at(length);
-    let Ok(mut file) = ElfFile::parse(bytes) else {
+    let Ok(mut file) = ElfFile::from_vec(bytes.to_vec()) else {
         return;
     };
     for (step, &op) in ops.iter().enumerate() {

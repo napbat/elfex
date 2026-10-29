@@ -249,7 +249,8 @@ enum EntryPoint {
 /// assert_eq!(file.build_id()?, Some(vec![0xab; 20]));
 ///
 /// // A shared object starts at virtual address 0.
-/// let image = ElfImage::parse(&file.try_build()?)?;
+/// let bytes = file.try_build()?;
+/// let image = ElfImage::parse(&bytes)?;
 /// assert_eq!(image.image_origin(), Some(0));
 /// assert!(image.load_segments().all(|segment| segment.header.align == 0x1_0000));
 /// assert!(image.segment(SegmentType::NOTE).is_some());
