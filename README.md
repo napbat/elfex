@@ -492,7 +492,7 @@ mise run precommit
 ```
 
 The hooks run rustfmt and Clippy on all targets of the crate. They do this with all features
-and with `no_std + alloc`. They also lint the separate fuzz package.
+and with `no_std + alloc`. They also lint the separate fuzz and benchmark packages.
 
 CI runs the same checks. CI also runs the tests and rustdoc with both feature sets, and Clippy
 and the tests for the 32-bit `i686-pc-windows-msvc` target. On Linux, CI also does these
@@ -504,7 +504,8 @@ tasks:
 - It measures the line coverage, and fails below 97%.
 
 Each package manifest denies warnings, the Clippy pedantic group, missing docs and unsafe code.
-The only unsafe code is `BaseAddressReader`. Direct Cargo commands thus apply the same policy.
+In the crate, the only unsafe code is `BaseAddressReader`. In the separate `bench/` package, the
+only unsafe code is the counting allocator. Direct Cargo commands thus apply the same policy.
 The Rust examples in this README compile as doctests.
 
 The fuzz targets are in `fuzz/`. Run them with `cargo-fuzz` on Linux, macOS or WSL:
@@ -518,6 +519,12 @@ cargo +nightly fuzz run fuzz-elf-edit
 
 `fuzz-elf-edit` applies a sequence of `ElfFile` edits to the input. It checks that each edited
 file parses again and that its round trip is lossless.
+
+The separate `bench/` package measures the speed and the heap use of Elfex. It has Criterion
+benchmarks (`cargo bench --manifest-path bench/Cargo.toml`) and a `memory` binary with a
+counting allocator. The input is a large synthetic shared object, and optionally the files in
+`ELFEX_BENCH_FILES`. `bench/README.md` gives the commands, and `bench/BASELINE.md` gives the
+baseline results.
 
 ### Compatibility tests with real files
 
